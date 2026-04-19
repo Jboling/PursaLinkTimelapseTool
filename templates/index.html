@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Prusa Snapshot Companion</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --ok: #3fb950;
+      --warn: #d29922;
+      --err: #f85149;
+      --border: #30363d;
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 1.5rem; }
+    h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 1rem; }
+    h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 0.5rem; }
+    .grid { display: grid; gap: 1rem; }
+    @media (min-width: 800px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
+    .card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      padding: 1rem 1.1rem;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
+    input[type="text"], input[type="number"] {
+      width: 100%; padding: 0.45rem 0.5rem; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    }
+    input[type="checkbox"] { accent-color: var(--accent); width: 1rem; height: 1rem; }
+    button {
+      cursor: pointer; border: none; border-radius: 8px; padding: 0.5rem 0.9rem;
+      font-weight: 600; font-size: 0.9rem;
+    }
+    button.primary { background: var(--accent); color: #0d1117; }
+    button.danger { background: #21262d; color: var(--err); border: 1px solid var(--border); }
+    button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    pre {
+      margin: 0; font-size: 0.78rem; background: var(--bg); padding: 0.65rem;
+      border-radius: 8px; overflow: auto; max-height: 220px; border: 1px solid var(--border);
+    }
+    .pill { font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 999px; background: #21262d; }
+    .pill.run { color: var(--ok); border: 1px solid rgba(63, 185, 80, 0.35); }
+    .pill.stop { color: var(--muted); border: 1px solid var(--border); }
+    .err { color: var(--err); font-size: 0.85rem; white-space: pre-wrap; }
+    .muted { color: var(--muted); font-size: 0.85rem; }
+    a { color: var(--accent); }
+    .field-with-btn { display: flex; gap: 0.5rem; align-items: stretch; }
+    .field-with-btn input[type="text"] { flex: 1; min-width: 0; }
+    .field-with-btn button { flex-shrink: 0; white-space: nowrap; }
+    .dash-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));
+      gap: 0.65rem;
+      margin-bottom: 0.85rem;
+    }
+    .dash-stat {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.45rem 0.5rem; text-align: center;
+    }
+    .dash-stat .lbl { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .dash-stat .val { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
+    .dash-stat .sub { font-size: 0.72rem; color: var(--muted); margin-top: 0.15rem; }
+    .temp-charts {
+      display: grid;
+      gap: 0.75rem;
+      margin-top: 0.5rem;
+    }
+    @media (min-width: 640px) {
+      .temp-charts { grid-template-columns: 1fr 1fr; }
+    }
+    .temp-chart-wrap {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.4rem 0.5rem 0.5rem;
+    }
+    .temp-chart-wrap h3 {
+      margin: 0 0 0.35rem; font-size: 0.72rem; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .temp-chart-wrap canvas {
+      display: block; width: 100%; height: 140px; border-radius: 4px;
+    }
+    details.raw-json { margin-top: 0.65rem; }
+    details.raw-json summary {
+      cursor: pointer; font-size: 0.8rem; color: var(--muted); user-select: none;
+    }
+    details.raw-json pre { margin-top: 0.4rem; max-height: 160px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <p style="margin: 0 0 0.75rem; font-size: 0.9rem;"><a href="/tools/photo-video">Photos → video tool</a> <span class="muted">(folder of images → MP4)</span></p>
+    <h1>Prusa snapshot companion</h1>
+    <p class="muted">PrusaLink status + RTSP snapshots (ffmpeg). Configure secrets in <code>.env</code>.</p>
+
+    <div class="grid grid-2" style="margin-top: 1.25rem;">
+      <div class="card">
+        <h2>Printer</h2>
+        <div class="row" style="margin-bottom: 0.5rem;">
+          <span id="svcPill" class="pill stop">Service: …</span>
+          <span id="printPill" class="pill stop">State: …</span>
+        </div>
+        <div class="dash-stats" id="dashStats" aria-live="polite"></div>
+        <div class="temp-charts">
+          <div class="temp-chart-wrap">
+            <h3>Bed °C (current vs target)</h3>
+            <canvas id="chartBed" width="400" height="280"></canvas>
+          </div>
+          <div class="temp-chart-wrap">
+            <h3>Nozzle °C (current vs target)</h3>
+            <canvas id="chartNozzle" width="400" height="280"></canvas>
+          </div>
+        </div>
+        <p class="muted" id="tempChartHint" style="margin: 0.5rem 0 0; font-size: 0.75rem;">History builds while this page is open (last ~45 min, sampled every refresh).</p>
+        <details class="raw-json"><summary>Raw JSON</summary><pre id="printerJson">Loading…</pre></details>
+        <p class="muted" id="envHint" style="margin-top: 0.65rem;"></p>
+      </div>
+      <div class="card">
+        <h2>Capture service</h2>
+        <p class="muted" id="svcDetail" style="white-space: pre-wrap;">Last snap: —</p>
+        <div class="row" style="margin-top: 0.75rem;">
+          <button class="primary" id="btnStart" type="button">Start</button>
+          <button class="danger" id="btnStop" type="button">Stop</button>
+          <button class="ghost" id="btnTestSnap" type="button">Test snapshot</button>
+        </div>
+        <p class="err" id="svcErr" style="margin-top: 0.75rem;"></p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 1rem;">
+      <h2>Settings</h2>
+      <p class="muted">Saved to <span id="settingsPath"></span></p>
+      <div class="grid grid-2" style="margin-top: 0.75rem;">
+        <div>
+          <label for="interval">Snapshot interval (seconds)</label>
+          <input type="number" id="interval" min="1" step="1" />
+        </div>
+        <div>
+          <label for="outdir">Output folder</label>
+          <div class="field-with-btn">
+            <input type="text" id="outdir" autocomplete="off" placeholder="captures or full path" />
+            <button class="ghost" type="button" id="btnBrowseFolder" title="Native folder picker (this PC only)">Browse…</button>
+          </div>
+          <p class="muted" id="outdirAbsolute" style="margin: 0.35rem 0 0; font-size: 0.8rem; word-break: break-all;"></p>
+        </div>
+        <div>
+          <label for="jpegq">JPEG quality (-q:v 1–31, lower = better)</label>
+          <input type="number" id="jpegq" min="1" max="31" step="1" />
+        </div>
+        <div>
+          <label for="skipUnchanged">Skip if unchanged (seconds, 0 = off)</label>
+          <input type="number" id="skipUnchanged" min="0" step="1" />
+        </div>
+        <div style="grid-column: 1 / -1;">
+          <label for="template">Filename template (no extension; tokens: timestamp, printer_state, job_id, progress, job_state; axis_z / z = 6-digit µm for sorting; axis_z_mm = readable mm)</label>
+          <input type="text" id="template" autocomplete="off" />
+        </div>
+        <div class="row" style="align-items: flex-end; flex-wrap: wrap;">
+          <label class="row" style="gap: 0.35rem;">
+            <input type="checkbox" id="subfolder" />
+            Subfolder by date (YYYY-MM-DD)
+          </label>
+          <label class="row" style="gap: 0.35rem;">
+            <input type="checkbox" id="subfolderJob" />
+            Subfolder by job id (e.g. …/2026-04-18/54/)
+          </label>
+        </div>
+        <p class="muted" style="grid-column: 1 / -1; margin: 0;">Periodic captures run only while <code>printer.state</code> is <code>PRINTING</code>. Use <strong>Test snapshot</strong> to verify RTSP/ffmpeg any time. For phone / Tailscale, set <code>HOST=0.0.0.0</code> in <code>.env</code>. <strong>Browse…</strong> uses a Windows folder dialog and only works when this page is opened at <code>127.0.0.1</code> or <code>localhost</code> (not from another device’s IP).</p>
+      </div>
+      <div class="row" style="margin-top: 1rem;">
+        <button class="primary" id="btnSave" type="button">Save settings</button>
+        <span class="muted" id="saveMsg"></span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function jget(url) {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }
+    async function jput(url, body) {
+      const r = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }
+    async function jpost(url) {
+      const r = await fetch(url, { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }
+    async function jpostJson(url, body) {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }
+
+    const TEMP_MAX_AGE_MS = 45 * 60 * 1000;
+    const TEMP_MAX_POINTS = 700;
+    let tempSamples = [];
+
+    function parseNum(v) {
+      if (v == null || v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function formatDurationSec(sec) {
+      if (sec == null || sec === "") return "—";
+      const n = Math.floor(Number(sec));
+      if (!Number.isFinite(n) || n < 0) return "—";
+      const h = Math.floor(n / 3600);
+      const m = Math.floor((n % 3600) / 60);
+      const s = n % 60;
+      if (h > 0) return h + "h " + m + "m";
+      if (m > 0) return m + "m " + s + "s";
+      return s + "s";
+    }
+
+    function formatProgress(p) {
+      if (p == null || p === "") return "—";
+      const f = Number(p);
+      if (!Number.isFinite(f)) return "—";
+      if (f >= 0 && f <= 1) return (f * 100).toFixed(1) + "%";
+      return f.toFixed(1) + "%";
+    }
+
+    function formatAxisZ(z) {
+      if (z == null || z === "") return "—";
+      const f = Number(z);
+      return Number.isFinite(f) ? f.toFixed(3) + " mm" : "—";
+    }
+
+    function pruneTempSamples(samples) {
+      const now = Date.now();
+      let s = samples.filter(function (x) { return now - x.t <= TEMP_MAX_AGE_MS; });
+      if (s.length > TEMP_MAX_POINTS) s = s.slice(-TEMP_MAX_POINTS);
+      return s;
+    }
+
+    function pushTempSample(printer) {
+      const bed = parseNum(printer.temp_bed);
+      const bedTgt = parseNum(printer.target_bed);
+      const noz = parseNum(printer.temp_nozzle);
+      const nozTgt = parseNum(printer.target_nozzle);
+      tempSamples.push({ t: Date.now(), bed: bed, bedTgt: bedTgt, noz: noz, nozTgt: nozTgt });
+      tempSamples = pruneTempSamples(tempSamples);
+    }
+
+    function fmtClockShort(ts) {
+      return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    }
+
+    function drawTempChart(canvasEl, samples, curKey, tgtKey, colorCur, colorTgt) {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvasEl.getBoundingClientRect();
+      const Wc = rect.width;
+      const Hc = rect.height;
+      if (Wc < 8 || Hc < 8) return;
+      canvasEl.width = Math.floor(Wc * dpr);
+      canvasEl.height = Math.floor(Hc * dpr);
+      const ctx = canvasEl.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const W = Wc;
+      const H = Hc;
+      const padL = 38;
+      const padR = 6;
+      const padT = 10;
+      const padB = 20;
+      const plotW = W - padL - padR;
+      const plotH = H - padT - padB;
+
+      ctx.fillStyle = "#0f1419";
+      ctx.fillRect(0, 0, W, H);
+
+      if (samples.length < 2) {
+        ctx.fillStyle = "#8b949e";
+        ctx.font = "12px Segoe UI, system-ui, sans-serif";
+        ctx.fillText("Collecting samples…", padL, H / 2);
+        return;
+      }
+
+      const now = Date.now();
+      const t0 = samples[0].t;
+      const t1 = Math.max(now, samples[samples.length - 1].t);
+      const vals = [];
+      samples.forEach(function (s) {
+        var a = s[curKey];
+        var b = s[tgtKey];
+        if (a != null && !Number.isNaN(a)) vals.push(a);
+        if (b != null && !Number.isNaN(b)) vals.push(b);
+      });
+      if (vals.length === 0) {
+        ctx.fillStyle = "#8b949e";
+        ctx.font = "12px Segoe UI, system-ui, sans-serif";
+        ctx.fillText("No temperature data", padL, H / 2);
+        return;
+      }
+      var vmin = Math.min.apply(null, vals);
+      var vmax = Math.max.apply(null, vals);
+      if (vmin === vmax) {
+        vmin -= 5;
+        vmax += 5;
+      }
+      var span = vmax - vmin || 1;
+      var padV = span * 0.08;
+      vmin = Math.max(0, vmin - padV);
+      vmax = vmax + padV;
+      span = vmax - vmin || 1;
+
+      function xScale(ts) {
+        return padL + ((ts - t0) / (t1 - t0 || 1)) * plotW;
+      }
+      function yScale(v) {
+        return padT + (1 - (v - vmin) / span) * plotH;
+      }
+
+      ctx.strokeStyle = "#30363d";
+      ctx.lineWidth = 1;
+      for (var gi = 0; gi <= 4; gi++) {
+        var gy = padT + (gi / 4) * plotH;
+        ctx.beginPath();
+        ctx.moveTo(padL, gy);
+        ctx.lineTo(padL + plotW, gy);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = "#8b949e";
+      ctx.font = "10px Segoe UI, system-ui, sans-serif";
+      ctx.textAlign = "right";
+      for (gi = 0; gi <= 4; gi++) {
+        var gv = vmin + (1 - gi / 4) * span;
+        var gyy = padT + (gi / 4) * plotH;
+        ctx.fillText(Math.round(gv).toString(), padL - 4, gyy + 3);
+      }
+
+      ctx.textAlign = "center";
+      ctx.fillText(fmtClockShort(t0), padL + plotW * 0.2, H - 5);
+      ctx.fillText("now", padL + plotW * 0.88, H - 5);
+
+      function strokeSeries(key, color, dashed) {
+        ctx.beginPath();
+        var started = false;
+        for (var i = 0; i < samples.length; i++) {
+          var s = samples[i];
+          var v = s[key];
+          if (v == null || Number.isNaN(v)) {
+            started = false;
+            continue;
+          }
+          var x = xScale(s.t);
+          var y = yScale(v);
+          if (!started) {
+            ctx.moveTo(x, y);
+            started = true;
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.75;
+        ctx.setLineDash(dashed ? [5, 4] : []);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      strokeSeries(tgtKey, colorTgt, true);
+      strokeSeries(curKey, colorCur, false);
+
+      ctx.textAlign = "left";
+      ctx.font = "10px Segoe UI, system-ui, sans-serif";
+      ctx.fillStyle = colorCur;
+      ctx.fillText("● current", padL + plotW - 108, padT + 11);
+      ctx.fillStyle = colorTgt;
+      ctx.fillText("· · target", padL + plotW - 48, padT + 11);
+    }
+
+    function redrawTempCharts() {
+      var bedC = document.getElementById("chartBed");
+      var nozC = document.getElementById("chartNozzle");
+      if (bedC) drawTempChart(bedC, tempSamples, "bed", "bedTgt", "#58a6ff", "#6e7681");
+      if (nozC) drawTempChart(nozC, tempSamples, "noz", "nozTgt", "#f0883e", "#6e7681");
+    }
+
+    var tempChartResizeTimer = null;
+    function scheduleRedrawTempCharts() {
+      clearTimeout(tempChartResizeTimer);
+      tempChartResizeTimer = setTimeout(redrawTempCharts, 120);
+    }
+
+    function updateDashStats(data) {
+      var printer = (data.status && data.status.printer) || {};
+      var job = data.job || null;
+      var el = document.getElementById("dashStats");
+      if (!el) return;
+      el.textContent = "";
+      var items = [
+        { lbl: "Progress", val: formatProgress(job && job.progress) },
+        { lbl: "Z height", val: formatAxisZ(printer.axis_z) },
+        { lbl: "Job id", val: (job && job.id != null && job.id !== "") ? String(job.id) : "—" },
+        { lbl: "Time left", val: formatDurationSec(job && job.time_remaining) },
+        { lbl: "Printing", val: formatDurationSec(job && job.time_printing) },
+      ];
+      items.forEach(function (item) {
+        var box = document.createElement("div");
+        box.className = "dash-stat";
+        var l = document.createElement("div");
+        l.className = "lbl";
+        l.textContent = item.lbl;
+        var v = document.createElement("div");
+        v.className = "val";
+        v.textContent = item.val;
+        box.appendChild(l);
+        box.appendChild(v);
+        el.appendChild(box);
+      });
+    }
+
+    async function refreshPrinter() {
+      try {
+        const data = await jget("/api/printer/status");
+        document.getElementById("printerJson").textContent = JSON.stringify(data, null, 2);
+        const printer = (data.status && data.status.printer) || {};
+        const st = printer.state || "?";
+        const pill = document.getElementById("printPill");
+        pill.textContent = "State: " + st;
+        pill.className = "pill " + (st === "PRINTING" ? "run" : "stop");
+        updateDashStats(data);
+        pushTempSample(printer);
+        redrawTempCharts();
+      } catch (e) {
+        document.getElementById("printerJson").textContent = "Error: " + e.message;
+      }
+    }
+
+    async function refreshService() {
+      const s = await jget("/api/service");
+      const pill = document.getElementById("svcPill");
+      pill.textContent = "Service: " + (s.running ? "running" : "stopped");
+      pill.className = "pill " + (s.running ? "run" : "stop");
+      document.getElementById("btnStart").disabled = s.running;
+      document.getElementById("btnStop").disabled = !s.running;
+      let detail = "Snapshots: " + s.snapshots_taken;
+      if (s.last_snapshot_at) detail += " · Last: " + s.last_snapshot_at;
+      if (s.last_snapshot_path) detail += "\\n" + s.last_snapshot_path;
+      if (!s.running && s.stop_reason) detail += "\\n" + s.stop_reason;
+      document.getElementById("svcDetail").textContent = detail;
+      const errEl = document.getElementById("svcErr");
+      errEl.textContent = s.last_error || "";
+    }
+
+    async function refreshOutdirAbsolute() {
+      const el = document.getElementById("outdirAbsolute");
+      const raw = document.getElementById("outdir").value.trim();
+      if (!raw) {
+        el.textContent = "";
+        return;
+      }
+      try {
+        const r = await jget("/api/settings/resolve-output-dir?path=" + encodeURIComponent(raw));
+        el.textContent = "Absolute path: " + r.absolute;
+      } catch (e) {
+        el.textContent = "Could not resolve path: " + e.message;
+      }
+    }
+
+    let outdirResolveTimer = null;
+    function scheduleRefreshOutdirAbsolute() {
+      clearTimeout(outdirResolveTimer);
+      outdirResolveTimer = setTimeout(refreshOutdirAbsolute, 400);
+    }
+
+    async function loadSettings() {
+      const s = await jget("/api/settings");
+      document.getElementById("interval").value = s.snapshot_interval_seconds;
+      document.getElementById("outdir").value = s.output_dir;
+      document.getElementById("subfolder").checked = s.subfolder_by_date;
+      document.getElementById("subfolderJob").checked = s.subfolder_by_job_id !== false;
+      document.getElementById("template").value = s.filename_template;
+      document.getElementById("jpegq").value = s.jpeg_quality;
+      document.getElementById("skipUnchanged").value = s.skip_if_unchanged_seconds;
+      if (s.output_dir_absolute) {
+        document.getElementById("outdirAbsolute").textContent = "Absolute path: " + s.output_dir_absolute;
+      } else {
+        await refreshOutdirAbsolute();
+      }
+    }
+
+    async function boot() {
+      try {
+        const env = await jget("/api/env");
+        document.getElementById("envHint").innerHTML =
+          "Prusa: <code>" + env.prusa_base_url + "</code> · RTSP: <code>" + env.rtsp_url + "</code>";
+        document.getElementById("settingsPath").textContent = env.settings_path;
+      } catch (e) {
+        document.getElementById("envHint").textContent = "Could not load /api/env: " + e.message;
+      }
+      await loadSettings().catch(() => {});
+      await refreshPrinter();
+      await refreshService();
+      window.addEventListener("resize", scheduleRedrawTempCharts);
+      requestAnimationFrame(function () {
+        redrawTempCharts();
+      });
+      setInterval(refreshPrinter, 4000);
+      setInterval(refreshService, 2000);
+    }
+
+    document.getElementById("btnSave").onclick = async () => {
+      const msg = document.getElementById("saveMsg");
+      msg.textContent = "";
+      try {
+        const saved = await jput("/api/settings", {
+          snapshot_interval_seconds: parseFloat(document.getElementById("interval").value),
+          output_dir: document.getElementById("outdir").value.trim(),
+          subfolder_by_date: document.getElementById("subfolder").checked,
+          subfolder_by_job_id: document.getElementById("subfolderJob").checked,
+          filename_template: document.getElementById("template").value.trim(),
+          jpeg_quality: parseInt(document.getElementById("jpegq").value, 10),
+          skip_if_unchanged_seconds: parseFloat(document.getElementById("skipUnchanged").value),
+        });
+        if (saved.output_dir_absolute) {
+          document.getElementById("outdirAbsolute").textContent = "Absolute path: " + saved.output_dir_absolute;
+        }
+        msg.textContent = "Saved.";
+      } catch (e) {
+        msg.textContent = "Error: " + e.message;
+      }
+    };
+
+    document.getElementById("btnStart").onclick = async () => {
+      try {
+        await jpost("/api/service/start");
+        await refreshService();
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+    document.getElementById("btnStop").onclick = async () => {
+      try {
+        await jpost("/api/service/stop");
+        await refreshService();
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+    document.getElementById("btnTestSnap").onclick = async () => {
+      try {
+        const r = await jpost("/api/snapshot/test");
+        alert("Saved: " + r.path);
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+
+    document.getElementById("btnBrowseFolder").onclick = async () => {
+      const msg = document.getElementById("saveMsg");
+      msg.textContent = "";
+      const cur = document.getElementById("outdir").value.trim();
+      try {
+        const r = await jpostJson("/api/folder/browse", { initial_dir: cur || null });
+        if (r.cancelled) return;
+        if (r.path) {
+          document.getElementById("outdir").value = r.path;
+          await refreshOutdirAbsolute();
+        }
+      } catch (e) {
+        msg.textContent = "Browse: " + e.message;
+      }
+    };
+
+    document.getElementById("outdir").addEventListener("blur", refreshOutdirAbsolute);
+    document.getElementById("outdir").addEventListener("input", scheduleRefreshOutdirAbsolute);
+
+    boot();
+  </script>
+</body>
+</html>

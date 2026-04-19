@@ -1,0 +1,8 @@
+.env
+data/user_settings.json
+captures/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.log

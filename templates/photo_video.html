@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Photo → video</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --ok: #3fb950;
+      --err: #f85149;
+      --border: #30363d;
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); line-height: 1.5; }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 1.5rem; }
+    h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 0.35rem; }
+    .nav { margin-bottom: 1rem; font-size: 0.9rem; }
+    .nav a { color: var(--accent); }
+    h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 0.5rem; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      padding: 1rem 1.1rem;
+    }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
+    input[type="text"], input[type="number"] {
+      width: 100%; padding: 0.45rem 0.5rem; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    }
+    input[type="checkbox"] { accent-color: var(--accent); width: 1rem; height: 1rem; }
+    input[type="number"].inline-num { width: 4.5rem; flex-shrink: 0; }
+    button {
+      cursor: pointer; border: none; border-radius: 8px; padding: 0.5rem 0.9rem;
+      font-weight: 600; font-size: 0.9rem;
+    }
+    button.primary { background: var(--accent); color: #0d1117; }
+    button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .field-with-btn { display: flex; gap: 0.5rem; align-items: stretch; }
+    .field-with-btn input[type="text"] { flex: 1; min-width: 0; }
+    .field-with-btn button { flex-shrink: 0; white-space: nowrap; }
+    .muted { color: var(--muted); font-size: 0.85rem; }
+    .abs-line { font-size: 0.78rem; word-break: break-all; margin: 0.35rem 0 0; color: var(--muted); }
+    .abs-line strong { color: var(--text); font-weight: 500; }
+    .err { color: var(--err); font-size: 0.85rem; white-space: pre-wrap; margin-top: 0.5rem; }
+    .ok { color: var(--ok); font-size: 0.85rem; margin-top: 0.5rem; word-break: break-all; }
+    pre { margin: 0.5rem 0 0; font-size: 0.72rem; background: var(--bg); padding: 0.5rem; border-radius: 6px; overflow: auto; max-height: 140px; border: 1px solid var(--border); }
+    .row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin-top: 0.75rem; }
+    .row .grow { flex: 1; min-width: 8rem; }
+    .frame-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 0.75rem 0 0.35rem; }
+    .frame-toolbar button.ghost { padding: 0.35rem 0.65rem; font-size: 0.8rem; }
+    .frame-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+      gap: 0.5rem;
+      max-height: 360px;
+      overflow-y: auto;
+      padding: 0.45rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .frame-cell {
+      position: relative;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #0d1117;
+    }
+    .frame-cell label { display: flex; flex-direction: column; margin: 0; cursor: pointer; min-height: 0; }
+    .frame-cell input { position: absolute; top: 4px; left: 4px; z-index: 1; width: 1rem; height: 1rem; accent-color: var(--accent); }
+    .frame-cell img {
+      width: 100%; height: 76px; object-fit: cover; display: block;
+      background: #161b22;
+    }
+    .frame-cell .fn {
+      font-size: 0.65rem; color: var(--muted); padding: 0.25rem 0.3rem; word-break: break-all;
+      line-height: 1.25; max-height: 2.6em; overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <p class="nav"><a href="/">← Prusa snapshot companion</a></p>
+    <h1>Photos → video</h1>
+    <p class="muted">Combine images in a folder into one MP4 (order follows file name). Uncheck frames to skip them. Uses ffmpeg from <code>.env</code> (<code>FFMPEG_PATH</code>).</p>
+
+    <div class="card" style="margin-top: 1rem;">
+      <h2>Folders</h2>
+      <div>
+        <label for="inputDir">Image folder</label>
+        <div class="field-with-btn">
+          <input type="text" id="inputDir" autocomplete="off" placeholder="Folder containing .jpg, .png, …" />
+          <button class="ghost" type="button" id="btnBrowseIn">Browse…</button>
+        </div>
+        <p class="abs-line" id="absIn"></p>
+      </div>
+      <div style="margin-top: 0.85rem;">
+        <label for="outputDir">Output folder</label>
+        <div class="field-with-btn">
+          <input type="text" id="outputDir" autocomplete="off" placeholder="Where to save the .mp4" />
+          <button class="ghost" type="button" id="btnBrowseOut">Browse…</button>
+        </div>
+        <p class="abs-line" id="absOut"></p>
+      </div>
+      <div class="row">
+        <div class="grow">
+          <label for="outName">Output file name</label>
+          <input type="text" id="outName" value="timelapse.mp4" autocomplete="off" />
+        </div>
+        <div class="grow">
+          <label for="fps">Frames per second</label>
+          <input type="number" id="fps" min="0.1" max="120" step="0.1" value="24" />
+        </div>
+      </div>
+      <div style="margin-top: 0.85rem;">
+        <label class="row" style="align-items: center; gap: 0.5rem; flex-wrap: wrap; margin: 0;">
+          <input type="checkbox" id="holdLastCheck" />
+          <span>Hold last frame an extra</span>
+          <input type="number" class="inline-num" id="holdLastSec" min="0.1" max="600" step="0.1" value="3" disabled title="Seconds" />
+          <span class="muted">seconds</span>
+        </label>
+        <p class="muted" style="margin: 0.35rem 0 0; font-size: 0.78rem;">Adds time after the normal frame duration for the final image only.</p>
+      </div>
+      <p class="muted" id="imageInfo" style="margin: 0.75rem 0 0;"></p>
+      <h2 style="margin-top: 1rem;">Frames</h2>
+      <p class="muted" style="margin: 0 0 0.35rem;">Preview (lazy-loaded). Uncheck to exclude from the video.</p>
+      <div class="frame-toolbar" id="frameToolbar" style="display: none;">
+        <button type="button" class="ghost" id="btnAll">Select all</button>
+        <button type="button" class="ghost" id="btnNone">Select none</button>
+        <span class="muted" id="frameCountLabel"></span>
+      </div>
+      <div class="frame-grid" id="frameGrid" aria-live="polite"></div>
+      <div class="row" style="align-items: center;">
+        <button class="primary" type="button" id="btnBuild">Build video</button>
+        <span class="muted" id="buildStatus"></span>
+      </div>
+      <p class="err" id="errBox"></p>
+      <p class="ok" id="okBox"></p>
+      <details style="margin-top: 0.5rem;">
+        <summary class="muted" style="cursor: pointer;">ffmpeg output (last run)</summary>
+        <pre id="ffmpegLog"></pre>
+      </details>
+    </div>
+
+    <p class="muted" id="envFfmpeg" style="margin-top: 1rem;"></p>
+  </div>
+
+  <script>
+    async function jget(url) {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }
+    async function jpostJson(url, body) {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    }
+
+    function escDetail(msg) {
+      try {
+        const o = JSON.parse(msg);
+        if (o.detail) return typeof o.detail === "string" ? o.detail : JSON.stringify(o.detail);
+      } catch (e) { /* ignore */ }
+      return msg;
+    }
+
+    let resolveTimer = null;
+
+    async function loadFrameGrid() {
+      const a = document.getElementById("inputDir").value.trim();
+      const grid = document.getElementById("frameGrid");
+      const toolbar = document.getElementById("frameToolbar");
+      const countLabel = document.getElementById("frameCountLabel");
+      grid.innerHTML = "";
+      toolbar.style.display = "none";
+      countLabel.textContent = "";
+      if (!a) {
+        return;
+      }
+      try {
+        const r = await jget("/api/tools/photo-video/images?input_dir=" + encodeURIComponent(a));
+        if (r.count === 0) {
+          grid.innerHTML = "<p class=\"muted\" style=\"margin:0.35rem;\">No supported images in this folder.</p>";
+          return;
+        }
+        toolbar.style.display = "flex";
+        const inEnc = encodeURIComponent(a);
+        const frag = document.createDocumentFragment();
+        r.names.forEach(function (name) {
+          const cell = document.createElement("div");
+          cell.className = "frame-cell";
+          const lab = document.createElement("label");
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.className = "frame-cb";
+          cb.checked = true;
+          cb.dataset.name = name;
+          cb.addEventListener("change", updateFrameSelectionLabel);
+          const img = document.createElement("img");
+          img.loading = "lazy";
+          img.alt = "";
+          img.src = "/api/tools/photo-video/thumbnail?input_dir=" + inEnc + "&name=" + encodeURIComponent(name);
+          const fn = document.createElement("span");
+          fn.className = "fn";
+          fn.textContent = name;
+          lab.appendChild(cb);
+          lab.appendChild(img);
+          lab.appendChild(fn);
+          cell.appendChild(lab);
+          frag.appendChild(cell);
+        });
+        grid.appendChild(frag);
+        updateFrameSelectionLabel();
+      } catch (e) {
+        grid.innerHTML = "<p class=\"muted\" style=\"margin:0.35rem;\">Could not list images: " + escDetail(e.message) + "</p>";
+      }
+    }
+
+    function updateFrameSelectionLabel() {
+      const countLabel = document.getElementById("frameCountLabel");
+      const total = document.querySelectorAll(".frame-cb").length;
+      const sel = document.querySelectorAll(".frame-cb:checked").length;
+      if (total > 0) {
+        countLabel.textContent = total + " file(s) · " + sel + " selected";
+      }
+    }
+
+    async function refreshResolve() {
+      const a = document.getElementById("inputDir").value.trim();
+      const b = document.getElementById("outputDir").value.trim();
+      const absIn = document.getElementById("absIn");
+      const absOut = document.getElementById("absOut");
+      const info = document.getElementById("imageInfo");
+      absIn.textContent = "";
+      absOut.textContent = "";
+      info.textContent = "";
+      if (!a || !b) {
+        if (a) {
+          try {
+            const r = await jget("/api/settings/resolve-output-dir?path=" + encodeURIComponent(a));
+            absIn.innerHTML = "<strong>Absolute:</strong> " + r.absolute;
+          } catch (e) {
+            absIn.textContent = "Could not resolve: " + e.message;
+          }
+        }
+        if (b) {
+          try {
+            const r = await jget("/api/settings/resolve-output-dir?path=" + encodeURIComponent(b));
+            absOut.innerHTML = "<strong>Absolute:</strong> " + r.absolute;
+          } catch (e) {
+            absOut.textContent = "Could not resolve: " + e.message;
+          }
+        }
+        await loadFrameGrid();
+        return;
+      }
+      try {
+        const r = await jget(
+          "/api/tools/photo-video/resolve?input_dir=" + encodeURIComponent(a) +
+          "&output_dir=" + encodeURIComponent(b)
+        );
+        absIn.innerHTML = "<strong>Absolute:</strong> " + r.input_absolute;
+        absOut.innerHTML = "<strong>Absolute:</strong> " + r.output_absolute;
+        info.textContent = "Found " + r.image_count + " image(s) (sorted by file name).";
+      } catch (e) {
+        info.textContent = "Error: " + escDetail(e.message);
+      }
+      await loadFrameGrid();
+    }
+
+    function scheduleResolve() {
+      clearTimeout(resolveTimer);
+      resolveTimer = setTimeout(refreshResolve, 350);
+    }
+
+    document.getElementById("btnAll").onclick = function () {
+      document.querySelectorAll(".frame-cb").forEach(function (cb) { cb.checked = true; });
+      updateFrameSelectionLabel();
+    };
+    document.getElementById("btnNone").onclick = function () {
+      document.querySelectorAll(".frame-cb").forEach(function (cb) { cb.checked = false; });
+      updateFrameSelectionLabel();
+    };
+
+    (function () {
+      var chk = document.getElementById("holdLastCheck");
+      var num = document.getElementById("holdLastSec");
+      function syncHold() {
+        num.disabled = !chk.checked;
+      }
+      chk.addEventListener("change", syncHold);
+      syncHold();
+    })();
+
+    document.getElementById("btnBrowseIn").onclick = async () => {
+      const cur = document.getElementById("inputDir").value.trim();
+      try {
+        const r = await jpostJson("/api/folder/browse", {
+          initial_dir: cur || null,
+          dialog_title: "Select folder with images",
+        });
+        if (r.cancelled) return;
+        if (r.path) {
+          document.getElementById("inputDir").value = r.path;
+          await refreshResolve();
+        }
+      } catch (e) {
+        document.getElementById("errBox").textContent = escDetail(e.message);
+      }
+    };
+
+    document.getElementById("btnBrowseOut").onclick = async () => {
+      const cur = document.getElementById("outputDir").value.trim();
+      try {
+        const r = await jpostJson("/api/folder/browse", {
+          initial_dir: cur || null,
+          dialog_title: "Select output folder for video",
+        });
+        if (r.cancelled) return;
+        if (r.path) {
+          document.getElementById("outputDir").value = r.path;
+          await refreshResolve();
+        }
+      } catch (e) {
+        document.getElementById("errBox").textContent = escDetail(e.message);
+      }
+    };
+
+    document.getElementById("btnBuild").onclick = async () => {
+      const errBox = document.getElementById("errBox");
+      const okBox = document.getElementById("okBox");
+      const status = document.getElementById("buildStatus");
+      const logEl = document.getElementById("ffmpegLog");
+      errBox.textContent = "";
+      okBox.textContent = "";
+      logEl.textContent = "";
+      const input_dir = document.getElementById("inputDir").value.trim();
+      const output_dir = document.getElementById("outputDir").value.trim();
+      const output_filename = document.getElementById("outName").value.trim();
+      const fps = parseFloat(document.getElementById("fps").value);
+      if (!input_dir || !output_dir) {
+        errBox.textContent = "Set both image folder and output folder.";
+        return;
+      }
+      const boxes = document.querySelectorAll(".frame-cb");
+      let payload = {
+        input_dir: input_dir,
+        output_dir: output_dir,
+        output_filename: output_filename,
+        fps: fps,
+      };
+      if (boxes.length > 0) {
+        const names = Array.prototype.map.call(
+          document.querySelectorAll(".frame-cb:checked"),
+          function (cb) { return cb.dataset.name; }
+        );
+        if (names.length === 0) {
+          errBox.textContent = "Select at least one frame, or use Select all.";
+          return;
+        }
+        payload.include_names = names;
+      }
+      var holdChk = document.getElementById("holdLastCheck");
+      var holdInp = document.getElementById("holdLastSec");
+      if (holdChk.checked) {
+        var hs = parseFloat(holdInp.value);
+        if (!Number.isFinite(hs) || hs < 0.1 || hs > 600) {
+          errBox.textContent = "Hold duration must be between 0.1 and 600 seconds.";
+          return;
+        }
+        payload.hold_last_seconds = hs;
+      } else {
+        payload.hold_last_seconds = 0;
+      }
+      const btn = document.getElementById("btnBuild");
+      btn.disabled = true;
+      status.textContent = "Running ffmpeg…";
+      try {
+        const r = await jpostJson("/api/tools/photo-video/build", payload);
+        var tail = r.frame_count + " frames @ " + r.fps + " fps";
+        if (r.hold_last_seconds > 0) {
+          tail += ", last frame +" + r.hold_last_seconds + "s hold";
+        }
+        okBox.textContent = "Saved: " + r.video_path + " (" + tail + ")";
+        if (r.ffmpeg_log_tail) logEl.textContent = r.ffmpeg_log_tail;
+        status.textContent = "Done.";
+        await refreshResolve();
+      } catch (e) {
+        errBox.textContent = escDetail(e.message);
+        status.textContent = "";
+      } finally {
+        btn.disabled = false;
+      }
+    };
+
+    document.getElementById("inputDir").addEventListener("input", scheduleResolve);
+    document.getElementById("inputDir").addEventListener("blur", refreshResolve);
+    document.getElementById("outputDir").addEventListener("input", scheduleResolve);
+    document.getElementById("outputDir").addEventListener("blur", refreshResolve);
+
+    jget("/api/env").then(function (env) {
+      document.getElementById("envFfmpeg").textContent = "ffmpeg: " + env.ffmpeg_path;
+    }).catch(function () {});
+
+    refreshResolve();
+  </script>
+</body>
+</html>

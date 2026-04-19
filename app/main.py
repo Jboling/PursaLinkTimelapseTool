@@ -1,0 +1,421 @@
+import asyncio
+from pathlib import Path
+
+import mimetypes
+
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+
+from app.env_config import load_env_config
+from app.folder_picker import pick_folder
+from app.photo_video import (
+    build_timelapse_mp4,
+    filter_by_names,
+    list_images,
+    resolve_safe_image_file,
+)
+from app.prusa_client import PrusaClient
+from app.snapshot import build_filename, grab_frame_rtsp, resolve_output_path
+from app.user_settings import UserSettings, load_user_settings, save_user_settings
+from app.worker import runtime, start_worker, stop_worker
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+
+class UserSettingsPayload(BaseModel):
+    snapshot_interval_seconds: float | None = None
+    output_dir: str | None = None
+    subfolder_by_date: bool | None = None
+    subfolder_by_job_id: bool | None = None
+    filename_template: str | None = None
+    jpeg_quality: int | None = None
+    skip_if_unchanged_seconds: float | None = None
+
+
+class BrowseFolderPayload(BaseModel):
+    """Optional folder to open the dialog in (must exist)."""
+
+    initial_dir: str | None = None
+    dialog_title: str | None = None
+
+
+class PhotoVideoBuildPayload(BaseModel):
+    input_dir: str
+    output_dir: str
+    output_filename: str = "timelapse.mp4"
+    fps: float = 24.0
+    include_names: list[str] | None = None
+    hold_last_seconds: float = 0.0
+
+
+def _is_localhost(request: Request) -> bool:
+    client = request.client
+    if not client:
+        return False
+    host = client.host
+    if host in ("127.0.0.1", "::1"):
+        return True
+    if host.startswith("::ffff:") and host.endswith("127.0.0.1"):
+        return True
+    return False
+
+
+def get_env():
+    return load_env_config()
+
+
+def settings_path() -> Path:
+    return get_env().user_settings_path
+
+
+def _resolved_output_dir(output_dir: str) -> str:
+    return str(Path(output_dir).expanduser().resolve())
+
+
+app = FastAPI(title="PrusaLink Snapshot Companion", version="0.1.0")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+        },
+    )
+
+
+@app.get("/tools/photo-video", response_class=HTMLResponse)
+async def photo_video_tool(request: Request):
+    return templates.TemplateResponse(
+        "photo_video.html",
+        {"request": request},
+    )
+
+
+@app.get("/api/health")
+async def health():
+    return {"ok": True}
+
+
+@app.get("/api/env")
+async def api_env():
+    """Non-secret connection hints for the UI."""
+    env = get_env()
+    return {
+        "prusa_base_url": env.prusa_base_url,
+        "rtsp_url": env.rtsp_url,
+        "ffmpeg_path": env.ffmpeg_path,
+        "settings_path": str(env.user_settings_path),
+    }
+
+
+@app.get("/api/printer/status")
+async def printer_status():
+    env = get_env()
+    try:
+
+        def fetch():
+            c = PrusaClient(
+                env.prusa_base_url, env.prusa_username, env.prusa_password
+            )
+            return c.status(), c.job()
+
+        status, job = await asyncio.to_thread(fetch)
+    except Exception as e:
+        raise HTTPException(502, detail=str(e)) from e
+    return {"status": status, "job": job}
+
+
+@app.get("/api/settings")
+async def get_settings():
+    s = load_user_settings(settings_path())
+    d = s.model_dump()
+    d["output_dir_absolute"] = _resolved_output_dir(s.output_dir)
+    return d
+
+
+@app.get("/api/settings/resolve-output-dir")
+async def resolve_output_dir(path: str = Query("", description="Folder path to resolve to absolute")):
+    p = path.strip()
+    if not p:
+        return {"absolute": ""}
+    try:
+        return {"absolute": _resolved_output_dir(p)}
+    except Exception as e:
+        raise HTTPException(400, detail=str(e)) from e
+
+
+@app.post("/api/folder/browse")
+async def browse_folder(
+    request: Request, body: BrowseFolderPayload = BrowseFolderPayload()
+):
+    """
+    Open the native folder picker (Windows / cross-platform via Tk).
+    Only allowed when the HTTP client is localhost (this machine).
+    """
+    if not _is_localhost(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Folder browse is only available when using the app on this PC (127.0.0.1).",
+        )
+    try:
+        path = await asyncio.to_thread(
+            pick_folder, body.initial_dir, body.dialog_title
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not open folder dialog: {e}",
+        ) from e
+    if path is None:
+        return {"cancelled": True}
+    return {"path": path}
+
+
+@app.get("/api/tools/photo-video/resolve")
+async def photo_video_resolve(
+    input_dir: str = Query("", description="Folder containing images"),
+    output_dir: str = Query("", description="Folder for the output video"),
+):
+    """Return absolute paths and image count for validation."""
+    inp = input_dir.strip()
+    out = output_dir.strip()
+    if not inp or not out:
+        raise HTTPException(400, detail="input_dir and output_dir are required")
+    try:
+        in_abs = Path(inp).expanduser().resolve()
+        out_abs = Path(out).expanduser().resolve()
+    except Exception as e:
+        raise HTTPException(400, detail=str(e)) from e
+    if not in_abs.is_dir():
+        raise HTTPException(400, detail=f"Input is not a directory: {in_abs}")
+    try:
+        images = list_images(in_abs)
+    except ValueError as e:
+        raise HTTPException(400, detail=str(e)) from e
+    return {
+        "input_absolute": str(in_abs),
+        "output_absolute": str(out_abs),
+        "image_count": len(images),
+    }
+
+
+@app.get("/api/tools/photo-video/images")
+async def photo_video_images(input_dir: str = Query("", description="Folder containing images")):
+    """List image basenames in list_images order."""
+    inp = input_dir.strip()
+    if not inp:
+        raise HTTPException(400, detail="input_dir is required")
+    try:
+        in_abs = Path(inp).expanduser().resolve()
+    except Exception as e:
+        raise HTTPException(400, detail=str(e)) from e
+    if not in_abs.is_dir():
+        raise HTTPException(400, detail=f"Not a directory: {in_abs}")
+    try:
+        images = list_images(in_abs)
+    except ValueError as e:
+        raise HTTPException(400, detail=str(e)) from e
+    return {
+        "input_absolute": str(in_abs),
+        "names": [p.name for p in images],
+        "count": len(images),
+    }
+
+
+@app.get("/api/tools/photo-video/thumbnail")
+async def photo_video_thumbnail(
+    input_dir: str = Query("", description="Folder containing images"),
+    name: str = Query("", description="File basename only"),
+):
+    inp = input_dir.strip()
+    if not inp or not name.strip():
+        raise HTTPException(400, detail="input_dir and name are required")
+    try:
+        in_abs = Path(inp).expanduser().resolve()
+    except Exception as e:
+        raise HTTPException(400, detail=str(e)) from e
+    if not in_abs.is_dir():
+        raise HTTPException(400, detail=f"Not a directory: {in_abs}")
+    path = resolve_safe_image_file(in_abs, name)
+    if path is None:
+        raise HTTPException(404, detail="Image not found")
+    mt, _ = mimetypes.guess_type(str(path))
+    media = mt or "application/octet-stream"
+    return FileResponse(path, media_type=media)
+
+
+@app.post("/api/tools/photo-video/build")
+async def photo_video_build(body: PhotoVideoBuildPayload):
+    env = get_env()
+    inp = body.input_dir.strip()
+    out_dir = body.output_dir.strip()
+    if not inp or not out_dir:
+        raise HTTPException(400, detail="input_dir and output_dir are required")
+    name = body.output_filename.strip() or "timelapse.mp4"
+    if not name.lower().endswith(".mp4"):
+        name += ".mp4"
+    fps = float(body.fps)
+    if fps < 0.1 or fps > 120:
+        raise HTTPException(400, detail="fps must be between 0.1 and 120")
+    hold_last = float(body.hold_last_seconds)
+    if hold_last < 0 or hold_last > 600:
+        raise HTTPException(
+            400, detail="hold_last_seconds must be between 0 and 600"
+        )
+
+    try:
+        in_abs = Path(inp).expanduser().resolve()
+        out_abs = Path(out_dir).expanduser().resolve()
+    except Exception as e:
+        raise HTTPException(400, detail=str(e)) from e
+
+    if not in_abs.is_dir():
+        raise HTTPException(400, detail=f"Input is not a directory: {in_abs}")
+
+    all_imgs = list_images(in_abs)
+    if not all_imgs:
+        raise HTTPException(
+            400,
+            detail="No supported images found (.jpg, .jpeg, .png, .webp, .bmp, .tif)",
+        )
+
+    if body.include_names is not None:
+        if len(body.include_names) == 0:
+            raise HTTPException(
+                400,
+                detail="include_names is empty; select at least one frame.",
+            )
+        try:
+            images = filter_by_names(all_imgs, body.include_names)
+        except ValueError as e:
+            raise HTTPException(400, detail=str(e)) from e
+    else:
+        images = all_imgs
+
+    dest = out_abs / name
+
+    def run():
+        return build_timelapse_mp4(
+            env.ffmpeg_path, images, dest, fps, hold_last_seconds=hold_last
+        )
+
+    try:
+        log = await asyncio.to_thread(run)
+    except ValueError as e:
+        raise HTTPException(400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(500, detail=str(e)) from e
+
+    return {
+        "ok": True,
+        "video_path": str(dest.resolve()),
+        "frame_count": len(images),
+        "fps": fps,
+        "hold_last_seconds": hold_last,
+        "ffmpeg_log_tail": log[-4000:] if log else "",
+    }
+
+
+@app.put("/api/settings")
+async def put_settings(body: UserSettingsPayload):
+    path = settings_path()
+    cur = load_user_settings(path)
+    data = cur.model_dump()
+    for k, v in body.model_dump(exclude_none=True).items():
+        data[k] = v
+    updated = UserSettings.model_validate(data)
+    save_user_settings(path, updated)
+    d = updated.model_dump()
+    d["output_dir_absolute"] = _resolved_output_dir(updated.output_dir)
+    return d
+
+
+@app.get("/api/service")
+async def service_state():
+    st = runtime.state
+    return {
+        "running": st.running,
+        "last_snapshot_at": st.last_snapshot_at,
+        "last_snapshot_path": st.last_snapshot_path,
+        "snapshots_taken": st.snapshots_taken,
+        "last_error": st.last_error,
+        "last_printer_state": st.last_printer_state,
+        "last_loop_at": st.last_loop_at,
+        "stop_reason": st.stop_reason,
+    }
+
+
+@app.post("/api/service/start")
+async def service_start():
+    env = get_env()
+    ok, msg = await start_worker(env, settings_path())
+    if not ok:
+        raise HTTPException(400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.post("/api/service/stop")
+async def service_stop():
+    ok, msg = await stop_worker()
+    if not ok:
+        raise HTTPException(400, detail=msg)
+    return {"ok": True, "message": msg}
+
+
+@app.post("/api/snapshot/test")
+async def snapshot_test():
+    """Capture one frame using current settings and RTSP URL from .env."""
+    env = get_env()
+    s = load_user_settings(settings_path())
+    try:
+
+        def fetch():
+            c = PrusaClient(
+                env.prusa_base_url, env.prusa_username, env.prusa_password
+            )
+            return c.status(), c.job()
+
+        status, job = await asyncio.to_thread(fetch)
+        printer = status.get("printer") or {}
+        printer_state = str(printer.get("state", "UNKNOWN"))
+        job_id = str(job.get("id", "")) if job else ""
+        progress = str(job.get("progress", "")) if job else ""
+        job_state = str(job.get("state", "")) if job else ""
+        z_raw = printer.get("axis_z")
+        try:
+            z_test = float(z_raw) if z_raw is not None else None
+        except (TypeError, ValueError):
+            z_test = None
+        name = build_filename(
+            s, printer_state, job_id, progress, job_state, axis_z=z_test
+        )
+        dest = resolve_output_path(s, name, job_id)
+
+        def snap():
+            grab_frame_rtsp(env.ffmpeg_path, env.rtsp_url, dest, s.jpeg_quality)
+
+        await asyncio.to_thread(snap)
+    except Exception as e:
+        raise HTTPException(500, detail=str(e)) from e
+    return {"ok": True, "path": str(dest)}
+
+
+def main():
+    import uvicorn
+
+    env = load_env_config()
+    uvicorn.run(
+        "app.main:app",
+        host=env.host,
+        port=env.port,
+        reload=False,
+    )
+
+
+if __name__ == "__main__":
+    main()
