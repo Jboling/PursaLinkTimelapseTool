@@ -31,9 +31,32 @@
       background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
       padding: 1rem 1.1rem;
     }
+    .card.compact {
+      padding: 0.7rem 0.9rem;
+    }
+    .compact .row-tight {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 0.4rem;
+    }
+    .compact .muted {
+      margin: 0;
+    }
     .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
     label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
     input[type="text"], input[type="number"] {
+      width: 100%; padding: 0.45rem 0.5rem; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    }
+    textarea {
+      width: 100%; padding: 0.45rem 0.5rem; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.8rem;
+    }
+    select {
       width: 100%; padding: 0.45rem 0.5rem; border-radius: 6px;
       border: 1px solid var(--border); background: var(--bg); color: var(--text);
     }
@@ -59,6 +82,14 @@
     .field-with-btn { display: flex; gap: 0.5rem; align-items: stretch; }
     .field-with-btn input[type="text"] { flex: 1; min-width: 0; }
     .field-with-btn button { flex-shrink: 0; white-space: nowrap; }
+    .api-list { display: grid; gap: 0.5rem; }
+    .api-item {
+      display: grid; grid-template-columns: auto 1fr auto; gap: 0.6rem; align-items: center;
+      border: 1px solid var(--border); border-radius: 8px; padding: 0.55rem 0.6rem; background: var(--bg);
+    }
+    .api-method { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.03em; color: var(--accent); }
+    .api-path { font-family: Consolas, "Courier New", monospace; font-size: 0.8rem; }
+    .api-note { font-size: 0.74rem; color: var(--muted); margin-top: 0.12rem; }
     .dash-stats {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));
@@ -104,13 +135,27 @@
     <h1>Prusa snapshot companion</h1>
     <p class="muted">PrusaLink status + RTSP snapshots (ffmpeg). Configure secrets in <code>.env</code>.</p>
 
-    <div class="grid grid-2" style="margin-top: 1.25rem;">
-      <div class="card">
-        <h2>Printer</h2>
-        <div class="row" style="margin-bottom: 0.5rem;">
+    <div class="card compact" style="margin-top: 1.25rem;">
+      <div class="row" style="justify-content: space-between; align-items: center;">
+        <h2 style="margin: 0;">Capture service</h2>
+        <div class="row">
           <span id="svcPill" class="pill stop">Service: …</span>
           <span id="printPill" class="pill stop">State: …</span>
         </div>
+      </div>
+      <div class="row-tight">
+        <button class="primary" id="btnStart" type="button">Start</button>
+        <button class="danger" id="btnStop" type="button">Stop</button>
+        <button class="ghost" id="btnTestSnap" type="button">Test snapshot</button>
+        <p class="muted" id="layerDetail">Layer: — / —</p>
+      </div>
+      <p class="muted" id="svcDetail" style="white-space: pre-wrap; margin-top: 0.45rem;">Last snap: —</p>
+      <p class="err" id="svcErr" style="margin-top: 0.45rem;"></p>
+    </div>
+
+    <div class="grid" style="margin-top: 1rem;">
+      <div class="card">
+        <h2>Printer</h2>
         <div class="dash-stats" id="dashStats" aria-live="polite"></div>
         <div class="temp-charts">
           <div class="temp-chart-wrap">
@@ -126,16 +171,59 @@
         <details class="raw-json"><summary>Raw JSON</summary><pre id="printerJson">Loading…</pre></details>
         <p class="muted" id="envHint" style="margin-top: 0.65rem;"></p>
       </div>
-      <div class="card">
-        <h2>Capture service</h2>
-        <p class="muted" id="svcDetail" style="white-space: pre-wrap;">Last snap: —</p>
-        <div class="row" style="margin-top: 0.75rem;">
-          <button class="primary" id="btnStart" type="button">Start</button>
-          <button class="danger" id="btnStop" type="button">Stop</button>
-          <button class="ghost" id="btnTestSnap" type="button">Test snapshot</button>
+    </div>
+
+    <div class="card" style="margin-top: 1rem;">
+      <h2>API Console</h2>
+      <p class="muted">One-click calls for the most useful endpoints.</p>
+      <div class="api-list" style="margin-top: 0.75rem;">
+        <div class="api-item">
+          <div class="api-method">GET</div>
+          <div><div class="api-path">/api/health</div><div class="api-note">Basic app heartbeat.</div></div>
+          <button class="ghost api-run" data-method="GET" data-path="/api/health" type="button">Run</button>
         </div>
-        <p class="err" id="svcErr" style="margin-top: 0.75rem;"></p>
+        <div class="api-item">
+          <div class="api-method">GET</div>
+          <div><div class="api-path">/api/env</div><div class="api-note">Loaded runtime config (non-secret).</div></div>
+          <button class="ghost api-run" data-method="GET" data-path="/api/env" type="button">Run</button>
+        </div>
+        <div class="api-item">
+          <div class="api-method">GET</div>
+          <div><div class="api-path">/api/printer/status</div><div class="api-note">Current printer + job snapshot.</div></div>
+          <button class="ghost api-run" data-method="GET" data-path="/api/printer/status" type="button">Run</button>
+        </div>
+        <div class="api-item">
+          <div class="api-method">GET</div>
+          <div><div class="api-path">/api/metrics/sdpos</div><div class="api-note">UDP metrics and current sdpos.</div></div>
+          <button class="ghost api-run" data-method="GET" data-path="/api/metrics/sdpos" type="button">Run</button>
+        </div>
+        <div class="api-item">
+          <div class="api-method">GET</div>
+          <div><div class="api-path">/api/service</div><div class="api-note">Worker status, G-code download, layer progress.</div></div>
+          <button class="ghost api-run" data-method="GET" data-path="/api/service" type="button">Run</button>
+        </div>
+        <div class="api-item">
+          <div class="api-method">POST</div>
+          <div><div class="api-path">/api/service/start</div><div class="api-note">Start capture worker.</div></div>
+          <button class="ghost api-run" data-method="POST" data-path="/api/service/start" type="button">Run</button>
+        </div>
+        <div class="api-item">
+          <div class="api-method">POST</div>
+          <div><div class="api-path">/api/service/stop</div><div class="api-note">Stop capture worker.</div></div>
+          <button class="ghost api-run" data-method="POST" data-path="/api/service/stop" type="button">Run</button>
+        </div>
+        <div class="api-item">
+          <div class="api-method">POST</div>
+          <div><div class="api-path">/api/snapshot/test</div><div class="api-note">Force one RTSP snapshot.</div></div>
+          <button class="ghost api-run" data-method="POST" data-path="/api/snapshot/test" type="button">Run</button>
+        </div>
       </div>
+      <div class="row" style="margin-top: 0.75rem;">
+        <span class="muted" id="apiLastCall">Last call: —</span>
+        <span class="muted" id="apiStatus"></span>
+        <button class="ghost" id="btnApiCopy" type="button">Copy response</button>
+      </div>
+      <pre id="apiResult" style="margin-top: 0.65rem;">{}</pre>
     </div>
 
     <div class="card" style="margin-top: 1rem;">
@@ -161,6 +249,13 @@
         <div>
           <label for="skipUnchanged">Skip if unchanged (seconds, 0 = off)</label>
           <input type="number" id="skipUnchanged" min="0" step="1" />
+        </div>
+        <div>
+          <label for="snapshotMode">Snapshot mode</label>
+          <select id="snapshotMode" style="width: 100%; padding: 0.45rem 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text);">
+            <option value="sdpos_layer">sdpos_layer (M331/M334 + per-layer)</option>
+            <option value="axis_z">axis_z (legacy Z change)</option>
+          </select>
         </div>
         <div style="grid-column: 1 / -1;">
           <label for="template">Filename template (no extension; tokens: timestamp, printer_state, job_id, progress, job_state; axis_z / z = 6-digit µm for sorting; axis_z_mm = readable mm)</label>
@@ -210,10 +305,29 @@
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     }
+    async function apiCall(method, path, bodyText) {
+      const opts = { method: method };
+      if (method !== "GET") {
+        opts.headers = { "Content-Type": "application/json" };
+        if (bodyText && bodyText.trim()) {
+          opts.body = bodyText;
+        }
+      }
+      const r = await fetch(path, opts);
+      const txt = await r.text();
+      let parsed = txt;
+      try { parsed = JSON.parse(txt); } catch (_e) {}
+      if (!r.ok) {
+        throw new Error("HTTP " + r.status + ": " + (typeof parsed === "string" ? parsed : JSON.stringify(parsed)));
+      }
+      return { status: r.status, data: parsed };
+    }
 
     const TEMP_MAX_AGE_MS = 45 * 60 * 1000;
     const TEMP_MAX_POINTS = 700;
     let tempSamples = [];
+    let latestServiceState = null;
+    let latestPrinterData = null;
 
     function parseNum(v) {
       if (v == null || v === "") return null;
@@ -410,8 +524,12 @@
       var el = document.getElementById("dashStats");
       if (!el) return;
       el.textContent = "";
+      var lp = (latestServiceState && latestServiceState.layer_progress) || {};
+      var layerCur = (lp.current_display != null) ? String(lp.current_display) : "—";
+      var layerTot = (lp.total != null) ? String(lp.total) : "—";
       var items = [
         { lbl: "Progress", val: formatProgress(job && job.progress) },
+        { lbl: "Layer", val: layerCur + " / " + layerTot, sub: (lp.map_error || "") },
         { lbl: "Z height", val: formatAxisZ(printer.axis_z) },
         { lbl: "Job id", val: (job && job.id != null && job.id !== "") ? String(job.id) : "—" },
         { lbl: "Time left", val: formatDurationSec(job && job.time_remaining) },
@@ -428,6 +546,12 @@
         v.textContent = item.val;
         box.appendChild(l);
         box.appendChild(v);
+        if (item.sub) {
+          var s = document.createElement("div");
+          s.className = "sub";
+          s.textContent = item.sub;
+          box.appendChild(s);
+        }
         el.appendChild(box);
       });
     }
@@ -435,6 +559,7 @@
     async function refreshPrinter() {
       try {
         const data = await jget("/api/printer/status");
+        latestPrinterData = data;
         document.getElementById("printerJson").textContent = JSON.stringify(data, null, 2);
         const printer = (data.status && data.status.printer) || {};
         const st = printer.state || "?";
@@ -451,6 +576,7 @@
 
     async function refreshService() {
       const s = await jget("/api/service");
+      latestServiceState = s;
       const pill = document.getElementById("svcPill");
       pill.textContent = "Service: " + (s.running ? "running" : "stopped");
       pill.className = "pill " + (s.running ? "run" : "stop");
@@ -461,6 +587,13 @@
       if (s.last_snapshot_path) detail += "\\n" + s.last_snapshot_path;
       if (!s.running && s.stop_reason) detail += "\\n" + s.stop_reason;
       document.getElementById("svcDetail").textContent = detail;
+      const lp = s.layer_progress || {};
+      const cur = (lp.current_display != null) ? lp.current_display : "—";
+      const tot = (lp.total != null) ? lp.total : "—";
+      let layerTxt = "Layer: " + cur + " / " + tot;
+      if (lp.map_error) layerTxt += " (" + lp.map_error + ")";
+      document.getElementById("layerDetail").textContent = layerTxt;
+      if (latestPrinterData) updateDashStats(latestPrinterData);
       const errEl = document.getElementById("svcErr");
       errEl.textContent = s.last_error || "";
     }
@@ -495,6 +628,7 @@
       document.getElementById("template").value = s.filename_template;
       document.getElementById("jpegq").value = s.jpeg_quality;
       document.getElementById("skipUnchanged").value = s.skip_if_unchanged_seconds;
+      document.getElementById("snapshotMode").value = s.snapshot_mode || "sdpos_layer";
       if (s.output_dir_absolute) {
         document.getElementById("outdirAbsolute").textContent = "Absolute path: " + s.output_dir_absolute;
       } else {
@@ -534,6 +668,7 @@
           filename_template: document.getElementById("template").value.trim(),
           jpeg_quality: parseInt(document.getElementById("jpegq").value, 10),
           skip_if_unchanged_seconds: parseFloat(document.getElementById("skipUnchanged").value),
+          snapshot_mode: document.getElementById("snapshotMode").value,
         });
         if (saved.output_dir_absolute) {
           document.getElementById("outdirAbsolute").textContent = "Absolute path: " + saved.output_dir_absolute;
@@ -587,6 +722,39 @@
 
     document.getElementById("outdir").addEventListener("blur", refreshOutdirAbsolute);
     document.getElementById("outdir").addEventListener("input", scheduleRefreshOutdirAbsolute);
+
+    async function runApiFromButton(method, path) {
+      const st = document.getElementById("apiStatus");
+      const out = document.getElementById("apiResult");
+      const last = document.getElementById("apiLastCall");
+      st.textContent = "Sending…";
+      out.textContent = "";
+      last.textContent = "Last call: " + method + " " + path;
+      try {
+        const r = await apiCall(method, path, "");
+        st.textContent = "OK " + r.status;
+        out.textContent = (typeof r.data === "string") ? r.data : JSON.stringify(r.data, null, 2);
+      } catch (e) {
+        st.textContent = "Error";
+        out.textContent = String(e.message || e);
+      }
+    }
+    document.querySelectorAll(".api-run").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const method = btn.getAttribute("data-method") || "GET";
+        const path = btn.getAttribute("data-path") || "/api/health";
+        await runApiFromButton(method, path);
+      });
+    });
+    document.getElementById("btnApiCopy").onclick = async () => {
+      const out = document.getElementById("apiResult").textContent || "";
+      try {
+        await navigator.clipboard.writeText(out);
+        document.getElementById("apiStatus").textContent = "Copied";
+      } catch (_e) {
+        document.getElementById("apiStatus").textContent = "Copy failed";
+      }
+    };
 
     boot();
   </script>

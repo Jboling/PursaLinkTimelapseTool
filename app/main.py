@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import mimetypes
@@ -16,6 +17,8 @@ from app.photo_video import (
     list_images,
     resolve_safe_image_file,
 )
+from app.metrics_state import metrics_state
+from app.metrics_udp import start_metrics_udp_server, stop_metrics_udp_server
 from app.prusa_client import PrusaClient
 from app.snapshot import build_filename, grab_frame_rtsp, resolve_output_path
 from app.user_settings import UserSettings, load_user_settings, save_user_settings
@@ -33,6 +36,7 @@ class UserSettingsPayload(BaseModel):
     filename_template: str | None = None
     jpeg_quality: int | None = None
     skip_if_unchanged_seconds: float | None = None
+    snapshot_mode: str | None = None
 
 
 class BrowseFolderPayload(BaseModel):
@@ -75,7 +79,20 @@ def _resolved_output_dir(output_dir: str) -> str:
     return str(Path(output_dir).expanduser().resolve())
 
 
-app = FastAPI(title="PrusaLink Snapshot Companion", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    env = load_env_config()
+    if env.metrics_udp_enabled:
+        await start_metrics_udp_server(env.metrics_udp_bind, env.metrics_udp_port)
+    yield
+    await stop_metrics_udp_server()
+
+
+app = FastAPI(
+    title="PrusaLink Snapshot Companion",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -107,10 +124,40 @@ async def api_env():
     env = get_env()
     return {
         "prusa_base_url": env.prusa_base_url,
+        "prusa_http_timeout": env.prusa_http_timeout,
+        "prusa_download_timeout": env.prusa_download_timeout,
+        "prusa_connect_download_enabled": env.prusa_connect_download_enabled,
+        "prusa_connect_printer_id": env.prusa_connect_printer_id,
+        "prusa_connect_team_id": env.prusa_connect_team_id,
         "rtsp_url": env.rtsp_url,
         "ffmpeg_path": env.ffmpeg_path,
         "settings_path": str(env.user_settings_path),
+        "metrics_udp_enabled": env.metrics_udp_enabled,
+        "metrics_udp_bind": env.metrics_udp_bind,
+        "metrics_udp_port": env.metrics_udp_port,
     }
+
+
+@app.get("/api/metrics/sdpos")
+async def api_metrics_sdpos():
+    snap = metrics_state.snapshot()
+    hint = None
+    if snap.get("sdpos") is None:
+        hint = (
+            "No sdpos seen yet. Configure printer metrics: "
+            "M334 <host-ip> <port> then M331 sdpos."
+        )
+    out = {
+        "sdpos": snap.get("sdpos"),
+        "sdpos_source": snap.get("sdpos_source"),
+        "metrics": snap.get("metrics"),
+        "packets_total": snap.get("packets_total"),
+        "bytes_total": snap.get("bytes_total"),
+        "last_payload_preview": snap.get("last_payload_preview"),
+    }
+    if hint:
+        out["hint"] = hint
+    return out
 
 
 @app.get("/api/printer/status")
@@ -120,7 +167,14 @@ async def printer_status():
 
         def fetch():
             c = PrusaClient(
-                env.prusa_base_url, env.prusa_username, env.prusa_password
+                env.prusa_base_url,
+                env.prusa_username,
+                env.prusa_password,
+                timeout=env.prusa_http_timeout,
+                download_timeout=env.prusa_download_timeout,
+                connect_download_enabled=env.prusa_connect_download_enabled,
+                connect_printer_id=env.prusa_connect_printer_id,
+                connect_team_id=env.prusa_connect_team_id,
             )
             return c.status(), c.job()
 
@@ -338,6 +392,7 @@ async def put_settings(body: UserSettingsPayload):
 @app.get("/api/service")
 async def service_state():
     st = runtime.state
+    rt = runtime
     return {
         "running": st.running,
         "last_snapshot_at": st.last_snapshot_at,
@@ -347,6 +402,21 @@ async def service_state():
         "last_printer_state": st.last_printer_state,
         "last_loop_at": st.last_loop_at,
         "stop_reason": st.stop_reason,
+        "gcode_download": {
+            "status": rt.gcode_download_status,
+            "job_id": rt.gcode_download_job_id,
+            "display_name": rt.gcode_download_display_name,
+            "bytes": rt.gcode_download_bytes,
+            "layer_markers": rt.gcode_download_layer_markers,
+            "error": rt.gcode_download_error,
+        },
+        "layer_progress": {
+            "current_index": rt.layer_current_index,
+            "current_display": rt.layer_current_index + 1 if rt.layer_current_index is not None else None,
+            "total": rt.layer_total,
+            "map_error": rt.layer_map_error,
+            "last_snapped_index": rt.last_snap_layer_idx,
+        },
     }
 
 
@@ -376,7 +446,14 @@ async def snapshot_test():
 
         def fetch():
             c = PrusaClient(
-                env.prusa_base_url, env.prusa_username, env.prusa_password
+                env.prusa_base_url,
+                env.prusa_username,
+                env.prusa_password,
+                timeout=env.prusa_http_timeout,
+                download_timeout=env.prusa_download_timeout,
+                connect_download_enabled=env.prusa_connect_download_enabled,
+                connect_printer_id=env.prusa_connect_printer_id,
+                connect_team_id=env.prusa_connect_team_id,
             )
             return c.status(), c.job()
 

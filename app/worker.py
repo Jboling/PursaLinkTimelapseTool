@@ -8,11 +8,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+from app.bgcode_decode import normalize_print_file_to_text_bytes
 from app.env_config import EnvConfig
+from app.gcode_cache import GcodeCache, key_from_job
+from app.gcode_layers import layer_at_sdpos, layer_starts_from_bytes
+from app.metrics_state import metrics_state
 from app.prusa_client import PrusaClient
 from app.snapshot import build_filename, grab_frame_rtsp, resolve_output_path
 from app.user_settings import UserSettings, load_user_settings
 
+GCODE_CACHE_ROOT = Path("cache/gcode")
 Z_TOLERANCE = 1e-4
 # Require this many consecutive polls at the same axis_z before snapping (filters brief Z blips).
 AXIS_Z_STABLE_POLLS = 2
@@ -43,6 +48,18 @@ class Runtime:
     axis_z_prev_poll: Optional[float] = None
     axis_z_same_streak: int = 0
     idle_since_monotonic: Optional[float] = None
+    layer_map_job_id: Optional[str] = None
+    layer_starts: list[tuple[int, int]] = field(default_factory=list)
+    last_snap_layer_idx: Optional[int] = None
+    layer_current_index: Optional[int] = None
+    layer_total: Optional[int] = None
+    layer_map_error: Optional[str] = None
+    gcode_download_status: str = "idle"
+    gcode_download_job_id: Optional[str] = None
+    gcode_download_display_name: Optional[str] = None
+    gcode_download_bytes: Optional[int] = None
+    gcode_download_layer_markers: Optional[int] = None
+    gcode_download_error: Optional[str] = None
 
 
 def _job_progress_value(job: dict | None) -> float | None:
@@ -75,6 +92,193 @@ def _fingerprint(status: dict, job: dict | None) -> str:
     return "|".join(parts)
 
 
+def _clear_layer_progress(rt: Runtime) -> None:
+    rt.layer_map_job_id = None
+    rt.layer_starts = []
+    rt.last_snap_layer_idx = None
+    rt.layer_current_index = None
+    rt.layer_total = None
+    rt.layer_map_error = None
+    rt.gcode_download_status = "idle"
+    rt.gcode_download_job_id = None
+    rt.gcode_download_display_name = None
+    rt.gcode_download_bytes = None
+    rt.gcode_download_layer_markers = None
+    rt.gcode_download_error = None
+
+
+async def _ensure_layer_map(job: dict, rt: Runtime, client: PrusaClient) -> None:
+    job_id = str(job.get("id", "")) if job else ""
+    if not job_id:
+        return
+    if rt.layer_map_job_id == job_id and rt.layer_starts:
+        return
+
+    rt.layer_map_job_id = job_id
+    rt.last_snap_layer_idx = None
+    rt.layer_starts = []
+    rt.gcode_download_status = "downloading"
+    rt.gcode_download_job_id = job_id
+    rt.gcode_download_error = None
+
+    key = key_from_job(job)
+    cache = GcodeCache(GCODE_CACHE_ROOT)
+
+    if key is not None:
+        hit = await asyncio.to_thread(cache.get, key)
+        if hit is not None:
+            data, meta = hit
+            name = str(meta.get("content_name") or key.display_name)
+            try:
+                normalized = normalize_print_file_to_text_bytes(data, name)
+            except Exception as e:
+                rt.gcode_download_status = "failed"
+                rt.gcode_download_error = f"bgcode_decode_failed:{e!s}"
+                rt.state.last_error = (
+                    "sdpos_layer: cached BGCODE could not be decoded. "
+                    "Install pybgcode or use plain .gcode."
+                )
+                return
+            starts = layer_starts_from_bytes(normalized)
+            if starts:
+                rt.layer_starts = starts
+                rt.layer_total = max(i for i, _ in starts) + 1
+                rt.gcode_download_status = "success"
+                rt.gcode_download_display_name = name
+                rt.gcode_download_bytes = len(data)
+                rt.gcode_download_layer_markers = len(starts)
+                rt.gcode_download_error = f"cache_hit:{meta.get('source', 'unknown')}"
+                return
+
+    got = await asyncio.to_thread(client.download_print_file, job)
+    if not got:
+        rt.gcode_download_status = "failed"
+        detail = client.last_download_debug or "unknown"
+        rt.gcode_download_error = f"download_failed:{detail}"
+        rt.state.last_error = (
+            "sdpos_layer: could not download current print file. "
+            "Firmware may block active file reads; keep a cached copy for this job."
+        )
+        return
+
+    data, name = got
+    try:
+        normalized = normalize_print_file_to_text_bytes(data, name)
+    except Exception as e:
+        rt.gcode_download_status = "failed"
+        rt.gcode_download_display_name = name
+        rt.gcode_download_bytes = len(data)
+        rt.gcode_download_error = f"bgcode_decode_failed:{e!s}"
+        rt.state.last_error = (
+            "sdpos_layer: BGCODE decode failed. "
+            "Install pybgcode to support .bgcode files."
+        )
+        return
+    starts = layer_starts_from_bytes(normalized)
+    if not starts:
+        rt.gcode_download_status = "failed"
+        rt.gcode_download_display_name = name
+        rt.gcode_download_bytes = len(data)
+        rt.gcode_download_error = "no_layer_markers_in_file"
+        rt.state.last_error = (
+            "sdpos_layer: no layer markers found in downloaded file."
+        )
+        return
+
+    rt.layer_starts = starts
+    rt.layer_total = max(i for i, _ in starts) + 1
+    rt.gcode_download_status = "success"
+    rt.gcode_download_display_name = name
+    rt.gcode_download_bytes = len(data)
+    rt.gcode_download_layer_markers = len(starts)
+    rt.gcode_download_error = None
+    rt.state.last_error = None
+
+    if key is not None:
+        try:
+            await asyncio.to_thread(
+                cache.put, key, data, content_name=name, source="prusalink_download"
+            )
+        except OSError:
+            pass
+
+
+def _update_layer_progress(rt: Runtime) -> None:
+    if not rt.layer_starts:
+        rt.layer_current_index = None
+        rt.layer_map_error = None
+        return
+    sdpos = metrics_state.sdpos
+    if sdpos is None:
+        rt.layer_current_index = None
+        rt.layer_map_error = "waiting_sdpos"
+        return
+    idx, err = layer_at_sdpos(rt.layer_starts, sdpos)
+    rt.layer_current_index = idx
+    rt.layer_map_error = err
+
+
+async def _try_snap_sdpos_layer(
+    env: EnvConfig,
+    settings: UserSettings,
+    status: dict,
+    job: dict | None,
+    printer_state: str,
+    axis_z: float | None,
+    rt: Runtime,
+) -> bool:
+    if not job or not rt.layer_starts:
+        return False
+    sdpos = metrics_state.sdpos
+    if sdpos is None:
+        rt.state.last_error = (
+            "sdpos_layer: waiting for UDP sdpos. Configure M334 <host> <port> then M331 sdpos."
+        )
+        return False
+
+    layer_idx, err = layer_at_sdpos(rt.layer_starts, sdpos)
+    if layer_idx is None:
+        rt.state.last_error = f"sdpos_layer: {err or 'unknown'} (sdpos={sdpos})"
+        return False
+    if rt.last_snap_layer_idx is not None and layer_idx <= rt.last_snap_layer_idx:
+        return False
+
+    job_id = str(job.get("id", ""))
+    progress = str(job.get("progress", ""))
+    job_state = str(job.get("state", ""))
+    fp = _fingerprint(status, job) + f"|layer:{layer_idx}"
+    now_ts = time.monotonic()
+    if settings.skip_if_unchanged_seconds > 0 and rt.last_snap_fingerprint == fp:
+        if rt.last_snap_wallclock is not None:
+            elapsed = now_ts - rt.last_snap_wallclock
+            if elapsed < settings.skip_if_unchanged_seconds:
+                return False
+
+    filename = build_filename(
+        settings, printer_state, job_id, progress, job_state, axis_z=axis_z
+    )
+    dest = resolve_output_path(settings, filename, job_id)
+
+    def snap():
+        grab_frame_rtsp(
+            env.ffmpeg_path,
+            env.rtsp_url,
+            dest,
+            settings.jpeg_quality,
+        )
+
+    await asyncio.to_thread(snap)
+
+    rt.last_snap_layer_idx = layer_idx
+    rt.last_snap_fingerprint = fp
+    rt.last_snap_wallclock = now_ts
+    rt.state.last_snapshot_at = datetime.now(timezone.utc).isoformat()
+    rt.state.last_snapshot_path = str(dest)
+    rt.state.snapshots_taken += 1
+    rt.state.last_error = None
+    return True
+
+
 def _shutdown_entire_process() -> None:
     """Exit the whole process (uvicorn web UI + capture worker)."""
     os._exit(0)
@@ -85,7 +289,14 @@ async def _run_loop(
     get_settings: Callable[[], UserSettings],
 ) -> None:
     client = PrusaClient(
-        env.prusa_base_url, env.prusa_username, env.prusa_password
+        env.prusa_base_url,
+        env.prusa_username,
+        env.prusa_password,
+        timeout=env.prusa_http_timeout,
+        download_timeout=env.prusa_download_timeout,
+        connect_download_enabled=env.prusa_connect_download_enabled,
+        connect_printer_id=env.prusa_connect_printer_id,
+        connect_team_id=env.prusa_connect_team_id,
     )
     rt = runtime
 
@@ -122,8 +333,26 @@ async def _run_loop(
                 rt.job_id_snapped_at_100 = None
                 rt.axis_z_prev_poll = None
                 rt.axis_z_same_streak = 0
+                _clear_layer_progress(rt)
                 await asyncio.sleep(max(1.0, settings.snapshot_interval_seconds))
                 continue
+
+            if settings.snapshot_mode == "sdpos_layer":
+                if job:
+                    await _ensure_layer_map(job, rt, client)
+                if rt.layer_starts:
+                    _update_layer_progress(rt)
+                    z_raw_sd = printer.get("axis_z")
+                    try:
+                        z_for_name = float(z_raw_sd) if z_raw_sd is not None else None
+                    except (TypeError, ValueError):
+                        z_for_name = None
+                    snapped = await _try_snap_sdpos_layer(
+                        env, settings, status, job, printer_state, z_for_name, rt
+                    )
+                    if snapped:
+                        await asyncio.sleep(max(1.0, settings.snapshot_interval_seconds))
+                        continue
 
             z_raw = printer.get("axis_z")
             try:
@@ -241,6 +470,7 @@ async def start_worker(
     runtime.state.last_error = None
     runtime.state.stop_reason = None
     runtime.idle_since_monotonic = None
+    _clear_layer_progress(runtime)
 
     def get_settings():
         return load_user_settings(settings_path)
@@ -261,4 +491,5 @@ async def stop_worker() -> tuple[bool, str]:
         except asyncio.CancelledError:
             pass
         runtime.task = None
+    _clear_layer_progress(runtime)
     return True, "Stopped"

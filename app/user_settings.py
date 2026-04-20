@@ -1,7 +1,10 @@
 import json
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+SnapshotMode = Literal["axis_z", "sdpos_layer"]
 
 
 class UserSettings(BaseModel):
@@ -38,6 +41,10 @@ class UserSettings(BaseModel):
         0.0,
         ge=0.0,
         description="Min seconds between snaps when state unchanged (0 = off)",
+    )
+    snapshot_mode: SnapshotMode = Field(
+        "sdpos_layer",
+        description="axis_z: snap on Z change. sdpos_layer: snap once per new layer from UDP sdpos",
     )
 
 
