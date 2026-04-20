@@ -478,6 +478,8 @@ async def service_state():
             "total": rt.layer_total,
             "map_error": rt.layer_map_error,
             "last_snapped_index": rt.last_snap_layer_idx,
+            "axis_z": rt.last_axis_z,
+            "z_table_size": len(rt.layer_z_heights),
         },
     }
 

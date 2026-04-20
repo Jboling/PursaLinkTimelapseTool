@@ -13,7 +13,12 @@ from typing import Callable, Optional
 from app.bgcode_decode import normalize_print_file_to_text_bytes
 from app.env_config import EnvConfig
 from app.gcode_cache import GcodeCache, key_from_job
-from app.gcode_layers import layer_at_sdpos, layer_starts_from_bytes
+from app.gcode_layers import (
+    layer_at_sdpos,
+    layer_at_z,
+    layer_starts_from_bytes,
+    layer_z_heights_from_bytes,
+)
 from app.metrics_state import metrics_state
 from app.prusa_client import PrusaClient
 from app.snapshot import build_filename, grab_frame_rtsp, resolve_output_path
@@ -65,6 +70,8 @@ class Runtime:
     move_xy_points: list[tuple[int, float, float]] = field(default_factory=list)
     pending_layer_idx: Optional[int] = None
     pending_layer_since: Optional[float] = None
+    layer_z_heights: list[tuple[int, float]] = field(default_factory=list)
+    last_axis_z: Optional[float] = None
 
 
 _RE_MOVE = re.compile(br"^\s*G0?1\b", re.IGNORECASE)
@@ -118,6 +125,8 @@ def _clear_layer_progress(rt: Runtime) -> None:
     rt.move_xy_points = []
     rt.pending_layer_idx = None
     rt.pending_layer_since = None
+    rt.layer_z_heights = []
+    rt.last_axis_z = None
 
 
 def _extract_xy_points(data: bytes) -> list[tuple[int, float, float]]:
@@ -205,6 +214,7 @@ async def _ensure_layer_map(job: dict, rt: Runtime, client: PrusaClient) -> None
             if starts:
                 rt.layer_starts = starts
                 rt.move_xy_points = _extract_xy_points(normalized)
+                rt.layer_z_heights = layer_z_heights_from_bytes(normalized)
                 rt.layer_total = max(i for i, _ in starts) + 1
                 rt.gcode_download_status = "success"
                 rt.gcode_download_display_name = name
@@ -250,6 +260,7 @@ async def _ensure_layer_map(job: dict, rt: Runtime, client: PrusaClient) -> None
 
     rt.layer_starts = starts
     rt.move_xy_points = _extract_xy_points(normalized)
+    rt.layer_z_heights = layer_z_heights_from_bytes(normalized)
     rt.layer_total = max(i for i, _ in starts) + 1
     rt.gcode_download_status = "success"
     rt.gcode_download_display_name = name
@@ -267,15 +278,37 @@ async def _ensure_layer_map(job: dict, rt: Runtime, client: PrusaClient) -> None
             pass
 
 
-def _update_layer_progress(rt: Runtime) -> None:
+def _update_layer_progress(rt: Runtime, status: dict | None = None) -> None:
+    if status is not None:
+        printer = status.get("printer") or {}
+        z_raw = printer.get("axis_z")
+        try:
+            if z_raw is not None:
+                rt.last_axis_z = float(z_raw)
+        except (TypeError, ValueError):
+            pass
+
     if not rt.layer_starts:
         rt.layer_current_index = None
         rt.layer_map_error = None
         return
+
+    # Primary: axis_z -> parsed Z-table. Handles both .gcode and .bgcode.
+    if rt.layer_z_heights and rt.last_axis_z is not None:
+        idx, err = layer_at_z(rt.layer_z_heights, rt.last_axis_z)
+        if idx is None:
+            # Z-hop above all layers: hold the last known layer.
+            rt.layer_map_error = err
+            return
+        rt.layer_current_index = idx
+        rt.layer_map_error = None
+        return
+
+    # Fallback: sdpos-based lookup (works for plain .gcode).
     sdpos = metrics_state.sdpos
     if sdpos is None:
         rt.layer_current_index = None
-        rt.layer_map_error = "waiting_sdpos"
+        rt.layer_map_error = "waiting_axis_z_or_sdpos"
         return
     idx, err = layer_at_sdpos(rt.layer_starts, sdpos)
     rt.layer_current_index = idx
@@ -429,7 +462,7 @@ async def _run_loop(
                 if job:
                     await _ensure_layer_map(job, rt, client)
                 if rt.layer_starts:
-                    _update_layer_progress(rt)
+                    _update_layer_progress(rt, status)
                     z_raw_sd = printer.get("axis_z")
                     try:
                         z_for_name = float(z_raw_sd) if z_raw_sd is not None else None
