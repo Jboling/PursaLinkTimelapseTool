@@ -85,31 +85,34 @@ def build_timelapse_mp4(
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
 
     frame_dur = 1.0 / fps
-    lines = ["ffconcat version 1.0"]
-    last = images[-1]
-    last_q = _concat_path_for_ffmpeg(last)
+    hold = max(0.0, float(hold_last_seconds))
+    last_q = _concat_path_for_ffmpeg(images[-1])
 
-    # One file + duration pair per segment; the final duplicate `file` line is required
-    # by the concat demuxer. Do not use a single long duration for the last still — some
-    # ffmpeg builds treat it like one frame. Split: normal frame time, then optional hold
-    # as its own segment (same file), then the closing line.
+    # ffconcat layout: each image once with its duration, plus a trailing duplicate of
+    # the final image so the concat demuxer honors the last `duration`. We intentionally
+    # write the last duration as (frame_dur + hold) and we rely on `-t` below to clip
+    # the output to the exact expected total duration. Different ffmpeg builds handle
+    # the trailing-duplicate case differently (some apply the last `duration` to both
+    # entries, producing ~2x the hold; others without the trailing entry drop the
+    # duration entirely). Clamping with `-t` makes the result deterministic either way.
+    lines = ["ffconcat version 1.0"]
     for p in images[:-1]:
         lines.append(f"file '{_concat_path_for_ffmpeg(p)}'")
         lines.append(f"duration {frame_dur:.6f}")
-
     lines.append(f"file '{last_q}'")
-    lines.append(f"duration {frame_dur:.6f}")
-
-    if hold_last_seconds > 0:
-        lines.append(f"file '{last_q}'")
-        lines.append(f"duration {hold_last_seconds:.6f}")
-
+    lines.append(f"duration {frame_dur + hold:.6f}")
     lines.append(f"file '{last_q}'")
+
+    total_duration = len(images) * frame_dur + hold
 
     fd, list_path = tempfile.mkstemp(suffix=".ffconcat", text=True)
     os.close(fd)
     try:
         Path(list_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # -vf fps + -fps_mode cfr materialize the hold as duplicated frames at the target
+        # fps (otherwise a long still with extended PTS is silently truncated on output).
+        # -t clamps to the exact intended total duration so the trailing-duplicate quirk
+        # of the concat demuxer cannot bleed extra time into the final clip.
         cmd = [
             ffmpeg_bin,
             "-hide_banner",
@@ -120,6 +123,12 @@ def build_timelapse_mp4(
             "0",
             "-i",
             list_path,
+            "-vf",
+            f"fps={fps:g}",
+            "-fps_mode",
+            "cfr",
+            "-t",
+            f"{total_duration:.6f}",
             "-c:v",
             "libx264",
             "-pix_fmt",
