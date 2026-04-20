@@ -122,6 +122,26 @@
     .temp-chart-wrap canvas {
       display: block; width: 100%; height: 140px; border-radius: 4px;
     }
+    .preview-wrap {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      resize: both;
+      overflow: auto;
+      min-width: 220px;
+      min-height: 160px;
+      width: 100%;
+      max-width: 100%;
+      aspect-ratio: 16 / 9;
+    }
+    .preview-wrap iframe {
+      width: 100%;
+      height: 100%;
+      display: block;
+      border-radius: 8px;
+      background: #000;
+      border: 0;
+    }
     details.raw-json { margin-top: 0.65rem; }
     details.raw-json summary {
       cursor: pointer; font-size: 0.8rem; color: var(--muted); user-select: none;
@@ -147,10 +167,24 @@
         <button class="primary" id="btnStart" type="button">Start</button>
         <button class="danger" id="btnStop" type="button">Stop</button>
         <button class="ghost" id="btnTestSnap" type="button">Test snapshot</button>
+        <button class="ghost" id="btnOpenSnapshotFolder" type="button">Open snapshot folder</button>
         <p class="muted" id="layerDetail">Layer: — / —</p>
       </div>
       <p class="muted" id="svcDetail" style="white-space: pre-wrap; margin-top: 0.45rem;">Last snap: —</p>
       <p class="err" id="svcErr" style="margin-top: 0.45rem;"></p>
+    </div>
+
+    <div class="card" style="margin-top: 1rem;">
+      <h2>Stream View</h2>
+      <p class="muted">Embed a browser-playable stream URL (for example go2rtc stream page). Drag lower-right corner to resize.</p>
+      <div class="row" style="margin: 0.5rem 0;">
+        <label for="streamUrl" style="margin: 0;">Stream URL</label>
+        <input type="text" id="streamUrl" placeholder="http://127.0.0.1:1984/stream.html?src=coreone" style="min-width: 18rem; flex: 1;" />
+        <button class="ghost" id="btnStreamLoad" type="button">Load stream</button>
+      </div>
+      <div class="preview-wrap">
+        <iframe id="streamFrame" title="Stream view" loading="lazy" referrerpolicy="no-referrer"></iframe>
+      </div>
     </div>
 
     <div class="grid" style="margin-top: 1rem;">
@@ -257,6 +291,32 @@
             <option value="axis_z">axis_z (legacy Z change)</option>
           </select>
         </div>
+        <div class="row" style="align-items: flex-end; flex-wrap: wrap;">
+          <label class="row" style="gap: 0.35rem;">
+            <input type="checkbox" id="clearZoneEnabled" />
+            Wait for clear-zone before layer snapshot
+          </label>
+        </div>
+        <div>
+          <label for="clearZoneXMin">Clear zone X min</label>
+          <input type="number" id="clearZoneXMin" step="0.1" />
+        </div>
+        <div>
+          <label for="clearZoneXMax">Clear zone X max</label>
+          <input type="number" id="clearZoneXMax" step="0.1" />
+        </div>
+        <div>
+          <label for="clearZoneYMin">Clear zone Y min</label>
+          <input type="number" id="clearZoneYMin" step="0.1" />
+        </div>
+        <div>
+          <label for="clearZoneYMax">Clear zone Y max</label>
+          <input type="number" id="clearZoneYMax" step="0.1" />
+        </div>
+        <div>
+          <label for="clearZoneWait">Clear-zone wait timeout (seconds)</label>
+          <input type="number" id="clearZoneWait" min="0.5" max="30" step="0.5" />
+        </div>
         <div style="grid-column: 1 / -1;">
           <label for="template">Filename template (no extension; tokens: timestamp, printer_state, job_id, progress, job_state; axis_z / z = 6-digit µm for sorting; axis_z_mm = readable mm)</label>
           <input type="text" id="template" autocomplete="off" />
@@ -328,7 +388,6 @@
     let tempSamples = [];
     let latestServiceState = null;
     let latestPrinterData = null;
-
     function parseNum(v) {
       if (v == null || v === "") return null;
       const n = Number(v);
@@ -629,6 +688,12 @@
       document.getElementById("jpegq").value = s.jpeg_quality;
       document.getElementById("skipUnchanged").value = s.skip_if_unchanged_seconds;
       document.getElementById("snapshotMode").value = s.snapshot_mode || "sdpos_layer";
+      document.getElementById("clearZoneEnabled").checked = !!s.clear_zone_enabled;
+      document.getElementById("clearZoneXMin").value = (s.clear_zone_x_min != null) ? s.clear_zone_x_min : 170.0;
+      document.getElementById("clearZoneXMax").value = (s.clear_zone_x_max != null) ? s.clear_zone_x_max : 260.0;
+      document.getElementById("clearZoneYMin").value = (s.clear_zone_y_min != null) ? s.clear_zone_y_min : 170.0;
+      document.getElementById("clearZoneYMax").value = (s.clear_zone_y_max != null) ? s.clear_zone_y_max : 260.0;
+      document.getElementById("clearZoneWait").value = (s.clear_zone_wait_seconds != null) ? s.clear_zone_wait_seconds : 5.0;
       if (s.output_dir_absolute) {
         document.getElementById("outdirAbsolute").textContent = "Absolute path: " + s.output_dir_absolute;
       } else {
@@ -642,6 +707,9 @@
         document.getElementById("envHint").innerHTML =
           "Prusa: <code>" + env.prusa_base_url + "</code> · RTSP: <code>" + env.rtsp_url + "</code>";
         document.getElementById("settingsPath").textContent = env.settings_path;
+        const streamInput = document.getElementById("streamUrl");
+        streamInput.value = guessStreamEmbedUrl(env.rtsp_url);
+        loadStreamFrame();
       } catch (e) {
         document.getElementById("envHint").textContent = "Could not load /api/env: " + e.message;
       }
@@ -654,6 +722,20 @@
       });
       setInterval(refreshPrinter, 4000);
       setInterval(refreshService, 2000);
+    }
+
+    function guessStreamEmbedUrl(rtspUrl) {
+      if (!rtspUrl || typeof rtspUrl !== "string") return "";
+      const m = rtspUrl.match(/rtsp:\/\/[^/]+\/(.+)$/i);
+      const src = (m && m[1]) ? m[1].split("?")[0] : "";
+      if (!src) return "";
+      return "http://127.0.0.1:1984/stream.html?src=" + encodeURIComponent(src);
+    }
+
+    function loadStreamFrame() {
+      const url = document.getElementById("streamUrl").value.trim();
+      const frame = document.getElementById("streamFrame");
+      frame.src = url || "about:blank";
     }
 
     document.getElementById("btnSave").onclick = async () => {
@@ -669,6 +751,12 @@
           jpeg_quality: parseInt(document.getElementById("jpegq").value, 10),
           skip_if_unchanged_seconds: parseFloat(document.getElementById("skipUnchanged").value),
           snapshot_mode: document.getElementById("snapshotMode").value,
+          clear_zone_enabled: document.getElementById("clearZoneEnabled").checked,
+          clear_zone_x_min: parseFloat(document.getElementById("clearZoneXMin").value),
+          clear_zone_x_max: parseFloat(document.getElementById("clearZoneXMax").value),
+          clear_zone_y_min: parseFloat(document.getElementById("clearZoneYMin").value),
+          clear_zone_y_max: parseFloat(document.getElementById("clearZoneYMax").value),
+          clear_zone_wait_seconds: parseFloat(document.getElementById("clearZoneWait").value),
         });
         if (saved.output_dir_absolute) {
           document.getElementById("outdirAbsolute").textContent = "Absolute path: " + saved.output_dir_absolute;
@@ -703,6 +791,13 @@
         alert(e.message);
       }
     };
+    document.getElementById("btnOpenSnapshotFolder").onclick = async () => {
+      try {
+        await jpost("/api/folder/open-snapshot-dir");
+      } catch (e) {
+        alert(e.message);
+      }
+    };
 
     document.getElementById("btnBrowseFolder").onclick = async () => {
       const msg = document.getElementById("saveMsg");
@@ -722,6 +817,10 @@
 
     document.getElementById("outdir").addEventListener("blur", refreshOutdirAbsolute);
     document.getElementById("outdir").addEventListener("input", scheduleRefreshOutdirAbsolute);
+    document.getElementById("btnStreamLoad").onclick = loadStreamFrame;
+    document.getElementById("streamUrl").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") loadStreamFrame();
+    });
 
     async function runApiFromButton(method, path) {
       const st = document.getElementById("apiStatus");

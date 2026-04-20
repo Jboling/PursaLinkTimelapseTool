@@ -1,6 +1,8 @@
 import asyncio
 from contextlib import asynccontextmanager
+import os
 from pathlib import Path
+import subprocess
 
 import mimetypes
 
@@ -37,6 +39,12 @@ class UserSettingsPayload(BaseModel):
     jpeg_quality: int | None = None
     skip_if_unchanged_seconds: float | None = None
     snapshot_mode: str | None = None
+    clear_zone_enabled: bool | None = None
+    clear_zone_x_min: float | None = None
+    clear_zone_x_max: float | None = None
+    clear_zone_y_min: float | None = None
+    clear_zone_y_max: float | None = None
+    clear_zone_wait_seconds: float | None = None
 
 
 class BrowseFolderPayload(BaseModel):
@@ -228,6 +236,60 @@ async def browse_folder(
     if path is None:
         return {"cancelled": True}
     return {"path": path}
+
+
+@app.post("/api/folder/open-snapshot-dir")
+async def open_snapshot_dir(request: Request):
+    """
+    Open current job snapshot folder in OS file explorer.
+    Localhost only for safety.
+    """
+    if not _is_localhost(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Opening folders is only available when using the app on this PC (127.0.0.1).",
+        )
+
+    env = get_env()
+    s = load_user_settings(settings_path())
+    try:
+        def fetch_job():
+            c = PrusaClient(
+                env.prusa_base_url,
+                env.prusa_username,
+                env.prusa_password,
+                timeout=env.prusa_http_timeout,
+                download_timeout=env.prusa_download_timeout,
+                connect_download_enabled=env.prusa_connect_download_enabled,
+                connect_printer_id=env.prusa_connect_printer_id,
+                connect_team_id=env.prusa_connect_team_id,
+            )
+            return c.job()
+
+        job = await asyncio.to_thread(fetch_job)
+    except Exception as e:
+        raise HTTPException(502, detail=f"Could not fetch current job: {e}") from e
+
+    job_id = str((job or {}).get("id", "")).strip()
+    if not job_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No current job id found. Start/refresh an active print, then try again.",
+        )
+
+    # Use the same folder logic snapshots use (date/job settings), but no file creation.
+    target_dir = resolve_output_path(s, "_open_folder_probe.jpg", job_id).parent
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        if os.name == "nt":
+            subprocess.Popen(["explorer", str(target_dir)])
+        else:
+            raise RuntimeError("Open folder is currently implemented for Windows only.")
+    except Exception as e:
+        raise HTTPException(500, detail=f"Could not open folder: {e}") from e
+
+    return {"ok": True, "path": str(target_dir), "job_id": job_id}
 
 
 @app.get("/api/tools/photo-video/resolve")

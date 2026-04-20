@@ -1,6 +1,8 @@
 import asyncio
+import bisect
 import math
 import os
+import re
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -60,6 +62,14 @@ class Runtime:
     gcode_download_bytes: Optional[int] = None
     gcode_download_layer_markers: Optional[int] = None
     gcode_download_error: Optional[str] = None
+    move_xy_points: list[tuple[int, float, float]] = field(default_factory=list)
+    pending_layer_idx: Optional[int] = None
+    pending_layer_since: Optional[float] = None
+
+
+_RE_MOVE = re.compile(br"^\s*G0?1\b", re.IGNORECASE)
+_RE_X = re.compile(br"\bX(-?\d+(?:\.\d+)?)", re.IGNORECASE)
+_RE_Y = re.compile(br"\bY(-?\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
 def _job_progress_value(job: dict | None) -> float | None:
@@ -105,6 +115,58 @@ def _clear_layer_progress(rt: Runtime) -> None:
     rt.gcode_download_bytes = None
     rt.gcode_download_layer_markers = None
     rt.gcode_download_error = None
+    rt.move_xy_points = []
+    rt.pending_layer_idx = None
+    rt.pending_layer_since = None
+
+
+def _extract_xy_points(data: bytes) -> list[tuple[int, float, float]]:
+    """
+    Build a sparse stream of (sdpos_offset, x, y) from G0/G1 lines.
+    Coordinates are interpreted as absolute positions (typical sliced output).
+    """
+    out: list[tuple[int, float, float]] = []
+    cur_x: float | None = None
+    cur_y: float | None = None
+    offset = 0
+    for ln in data.splitlines(keepends=True):
+        line = ln.rstrip(b"\r\n")
+        if _RE_MOVE.match(line):
+            mx = _RE_X.search(line)
+            my = _RE_Y.search(line)
+            if mx is not None:
+                try:
+                    cur_x = float(mx.group(1))
+                except ValueError:
+                    pass
+            if my is not None:
+                try:
+                    cur_y = float(my.group(1))
+                except ValueError:
+                    pass
+            if cur_x is not None and cur_y is not None:
+                out.append((offset, cur_x, cur_y))
+        offset += len(ln)
+    return out
+
+
+def _xy_at_sdpos(points: list[tuple[int, float, float]], sdpos: int) -> tuple[float, float] | None:
+    if not points:
+        return None
+    offsets = [p[0] for p in points]
+    i = bisect.bisect_right(offsets, sdpos) - 1
+    if i < 0:
+        return None
+    _, x, y = points[i]
+    return x, y
+
+
+def _xy_in_clear_zone(settings: UserSettings, x: float, y: float) -> bool:
+    x0 = min(settings.clear_zone_x_min, settings.clear_zone_x_max)
+    x1 = max(settings.clear_zone_x_min, settings.clear_zone_x_max)
+    y0 = min(settings.clear_zone_y_min, settings.clear_zone_y_max)
+    y1 = max(settings.clear_zone_y_min, settings.clear_zone_y_max)
+    return x0 <= x <= x1 and y0 <= y <= y1
 
 
 async def _ensure_layer_map(job: dict, rt: Runtime, client: PrusaClient) -> None:
@@ -142,6 +204,7 @@ async def _ensure_layer_map(job: dict, rt: Runtime, client: PrusaClient) -> None
             starts = layer_starts_from_bytes(normalized)
             if starts:
                 rt.layer_starts = starts
+                rt.move_xy_points = _extract_xy_points(normalized)
                 rt.layer_total = max(i for i, _ in starts) + 1
                 rt.gcode_download_status = "success"
                 rt.gcode_download_display_name = name
@@ -186,6 +249,7 @@ async def _ensure_layer_map(job: dict, rt: Runtime, client: PrusaClient) -> None
         return
 
     rt.layer_starts = starts
+    rt.move_xy_points = _extract_xy_points(normalized)
     rt.layer_total = max(i for i, _ in starts) + 1
     rt.gcode_download_status = "success"
     rt.gcode_download_display_name = name
@@ -243,11 +307,33 @@ async def _try_snap_sdpos_layer(
     if rt.last_snap_layer_idx is not None and layer_idx <= rt.last_snap_layer_idx:
         return False
 
+    now_ts = time.monotonic()
+    if settings.clear_zone_enabled:
+        if rt.pending_layer_idx != layer_idx:
+            rt.pending_layer_idx = layer_idx
+            rt.pending_layer_since = now_ts
+        xy = _xy_at_sdpos(rt.move_xy_points, sdpos)
+        in_zone = False
+        if xy is not None:
+            in_zone = _xy_in_clear_zone(settings, xy[0], xy[1])
+        waited = (
+            (now_ts - rt.pending_layer_since)
+            if rt.pending_layer_since is not None
+            else 0.0
+        )
+        if (not in_zone) and waited < settings.clear_zone_wait_seconds:
+            if xy is None:
+                rt.state.last_error = "sdpos_layer: waiting clear-zone (no XY yet)"
+            else:
+                rt.state.last_error = (
+                    f"sdpos_layer: waiting clear-zone (x={xy[0]:.1f} y={xy[1]:.1f})"
+                )
+            return False
+
     job_id = str(job.get("id", ""))
     progress = str(job.get("progress", ""))
     job_state = str(job.get("state", ""))
     fp = _fingerprint(status, job) + f"|layer:{layer_idx}"
-    now_ts = time.monotonic()
     if settings.skip_if_unchanged_seconds > 0 and rt.last_snap_fingerprint == fp:
         if rt.last_snap_wallclock is not None:
             elapsed = now_ts - rt.last_snap_wallclock
@@ -270,6 +356,8 @@ async def _try_snap_sdpos_layer(
     await asyncio.to_thread(snap)
 
     rt.last_snap_layer_idx = layer_idx
+    rt.pending_layer_idx = None
+    rt.pending_layer_since = None
     rt.last_snap_fingerprint = fp
     rt.last_snap_wallclock = now_ts
     rt.state.last_snapshot_at = datetime.now(timezone.utc).isoformat()

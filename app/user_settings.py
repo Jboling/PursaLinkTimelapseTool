@@ -46,6 +46,17 @@ class UserSettings(BaseModel):
         "sdpos_layer",
         description="axis_z: snap on Z change. sdpos_layer: snap once per new layer from UDP sdpos",
     )
+    clear_zone_enabled: bool = Field(
+        False,
+        description="When true (sdpos_layer), wait for toolhead XY to enter clear zone before snapshot.",
+    )
+    clear_zone_x_min: float = Field(170.0, description="Clear-zone X minimum (mm)")
+    clear_zone_x_max: float = Field(260.0, description="Clear-zone X maximum (mm)")
+    clear_zone_y_min: float = Field(170.0, description="Clear-zone Y minimum (mm)")
+    clear_zone_y_max: float = Field(260.0, description="Clear-zone Y maximum (mm)")
+    clear_zone_wait_seconds: float = Field(
+        5.0, ge=0.5, le=30.0, description="Max wait for clear-zone before forcing snapshot."
+    )
 
 
 def default_user_settings() -> UserSettings:
