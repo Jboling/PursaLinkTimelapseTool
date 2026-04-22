@@ -28,8 +28,6 @@ GCODE_CACHE_ROOT = Path("cache/gcode")
 Z_TOLERANCE = 1e-4
 # Require this many consecutive polls at the same axis_z before snapping (filters brief Z blips).
 AXIS_Z_STABLE_POLLS = 2
-# Stop capture service after this many seconds with printer.state != PRINTING
-IDLE_STOP_SECONDS = 15 * 60
 
 
 @dataclass
@@ -436,17 +434,21 @@ async def _run_loop(
 
             if printer_state == "PRINTING":
                 rt.idle_since_monotonic = None
-            else:
+            elif settings.auto_shutdown_enabled:
+                idle_limit = max(60.0, float(settings.auto_shutdown_minutes) * 60.0)
                 now_m = time.monotonic()
                 if rt.idle_since_monotonic is None:
                     rt.idle_since_monotonic = now_m
-                elif now_m - rt.idle_since_monotonic >= IDLE_STOP_SECONDS:
+                elif now_m - rt.idle_since_monotonic >= idle_limit:
+                    minutes = settings.auto_shutdown_minutes
                     rt.state.stop_reason = (
-                        "Stopped automatically: printer not printing for 15 minutes. "
+                        f"Stopped automatically: printer not printing for {minutes:g} minutes. "
                         "Shutting down the app."
                     )
                     rt.state.running = False
                     _shutdown_entire_process()
+            else:
+                rt.idle_since_monotonic = None
 
             # Snapshots only while PrusaLink reports printer.state == PRINTING
             if printer_state != "PRINTING":
@@ -463,17 +465,22 @@ async def _run_loop(
                     await _ensure_layer_map(job, rt, client)
                 if rt.layer_starts:
                     _update_layer_progress(rt, status)
-                    z_raw_sd = printer.get("axis_z")
-                    try:
-                        z_for_name = float(z_raw_sd) if z_raw_sd is not None else None
-                    except (TypeError, ValueError):
-                        z_for_name = None
-                    snapped = await _try_snap_sdpos_layer(
-                        env, settings, status, job, printer_state, z_for_name, rt
-                    )
-                    if snapped:
-                        await asyncio.sleep(max(1.0, settings.snapshot_interval_seconds))
-                        continue
+                    if settings.snapshots_enabled:
+                        z_raw_sd = printer.get("axis_z")
+                        try:
+                            z_for_name = float(z_raw_sd) if z_raw_sd is not None else None
+                        except (TypeError, ValueError):
+                            z_for_name = None
+                        snapped = await _try_snap_sdpos_layer(
+                            env, settings, status, job, printer_state, z_for_name, rt
+                        )
+                        if snapped:
+                            await asyncio.sleep(max(1.0, settings.snapshot_interval_seconds))
+                            continue
+
+            if not settings.snapshots_enabled:
+                await asyncio.sleep(max(1.0, settings.snapshot_interval_seconds))
+                continue
 
             z_raw = printer.get("axis_z")
             try:

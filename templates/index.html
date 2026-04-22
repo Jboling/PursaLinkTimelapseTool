@@ -119,6 +119,18 @@
       margin: 0 0 0.35rem; font-size: 0.72rem; font-weight: 600; color: var(--muted);
       text-transform: uppercase; letter-spacing: 0.05em;
     }
+    .temp-chart-head {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 0.5rem; margin-bottom: 0.35rem;
+    }
+    .temp-chart-head h3 { margin: 0; }
+    .temp-chart-vals {
+      font-variant-numeric: tabular-nums; font-size: 0.9rem; line-height: 1.1;
+      white-space: nowrap;
+    }
+    .temp-chart-vals .cur { font-weight: 700; color: var(--fg); }
+    .temp-chart-vals .sep { color: var(--muted); margin: 0 0.15rem; }
+    .temp-chart-vals .tgt { color: var(--muted); }
     .temp-chart-wrap canvas {
       display: block; width: 100%; height: 140px; border-radius: 4px;
     }
@@ -166,6 +178,11 @@
       <div class="row-tight">
         <button class="primary" id="btnStart" type="button">Start</button>
         <button class="danger" id="btnStop" type="button">Stop</button>
+        <button class="ghost" id="btnToggleSnaps" type="button" title="When off, the service still monitors state and layer progress but does not save snapshot files.">Snapshots: …</button>
+        <button class="ghost" id="btnToggleAutoshutdown" type="button" title="When on, the app shuts down after the configured idle minutes of non-PRINTING state.">Auto-shutdown: …</button>
+        <label for="autoshutdownMins" class="muted" style="margin: 0;">after</label>
+        <input type="number" id="autoshutdownMins" min="1" max="1440" step="1" style="width: 5rem;" title="Minutes of non-PRINTING state before auto-shutdown fires." />
+        <span class="muted">min</span>
         <button class="ghost" id="btnTestSnap" type="button">Test snapshot</button>
         <button class="ghost" id="btnOpenSnapshotFolder" type="button">Open snapshot folder</button>
         <p class="muted" id="layerDetail">Layer: — / —</p>
@@ -193,11 +210,21 @@
         <div class="dash-stats" id="dashStats" aria-live="polite"></div>
         <div class="temp-charts">
           <div class="temp-chart-wrap">
-            <h3>Bed °C (current vs target)</h3>
+            <div class="temp-chart-head">
+              <h3>Bed °C (current vs target)</h3>
+              <div class="temp-chart-vals" id="bedVals">
+                <span class="cur" id="bedCurVal">—</span><span class="sep">/</span><span class="tgt" id="bedTgtVal">—</span>
+              </div>
+            </div>
             <canvas id="chartBed" width="400" height="280"></canvas>
           </div>
           <div class="temp-chart-wrap">
-            <h3>Nozzle °C (current vs target)</h3>
+            <div class="temp-chart-head">
+              <h3>Nozzle °C (current vs target)</h3>
+              <div class="temp-chart-vals" id="nozzleVals">
+                <span class="cur" id="nozzleCurVal">—</span><span class="sep">/</span><span class="tgt" id="nozzleTgtVal">—</span>
+              </div>
+            </div>
             <canvas id="chartNozzle" width="400" height="280"></canvas>
           </div>
         </div>
@@ -436,6 +463,26 @@
       tempSamples = pruneTempSamples(tempSamples);
     }
 
+    function fmtTempVal(v) {
+      if (v == null || Number.isNaN(v)) return "—";
+      return v.toFixed(1) + "°";
+    }
+
+    function updateTempValueDisplays(printer) {
+      const bed = parseNum(printer.temp_bed);
+      const bedTgt = parseNum(printer.target_bed);
+      const noz = parseNum(printer.temp_nozzle);
+      const nozTgt = parseNum(printer.target_nozzle);
+      const bc = document.getElementById("bedCurVal");
+      const bt = document.getElementById("bedTgtVal");
+      const nc = document.getElementById("nozzleCurVal");
+      const nt = document.getElementById("nozzleTgtVal");
+      if (bc) bc.textContent = fmtTempVal(bed);
+      if (bt) bt.textContent = fmtTempVal(bedTgt);
+      if (nc) nc.textContent = fmtTempVal(noz);
+      if (nt) nt.textContent = fmtTempVal(nozTgt);
+    }
+
     function fmtClockShort(ts) {
       return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     }
@@ -627,6 +674,7 @@
         pill.className = "pill " + (st === "PRINTING" ? "run" : "stop");
         updateDashStats(data);
         pushTempSample(printer);
+        updateTempValueDisplays(printer);
         redrawTempCharts();
       } catch (e) {
         document.getElementById("printerJson").textContent = "Error: " + e.message;
@@ -637,10 +685,26 @@
       const s = await jget("/api/service");
       latestServiceState = s;
       const pill = document.getElementById("svcPill");
-      pill.textContent = "Service: " + (s.running ? "running" : "stopped");
+      const snapsOn = s.snapshots_enabled !== false;
+      const shutdownOn = s.auto_shutdown_enabled !== false;
+      let pillTxt = "Service: " + (s.running ? "running" : "stopped");
+      if (s.running && !snapsOn) pillTxt += " (monitor only)";
+      pill.textContent = pillTxt;
       pill.className = "pill " + (s.running ? "run" : "stop");
       document.getElementById("btnStart").disabled = s.running;
       document.getElementById("btnStop").disabled = !s.running;
+      const snapBtn = document.getElementById("btnToggleSnaps");
+      snapBtn.textContent = "Snapshots: " + (snapsOn ? "ON" : "OFF");
+      snapBtn.className = snapsOn ? "primary" : "ghost";
+      const shutBtn = document.getElementById("btnToggleAutoshutdown");
+      shutBtn.textContent = "Auto-shutdown: " + (shutdownOn ? "ON" : "OFF");
+      shutBtn.className = shutdownOn ? "primary" : "ghost";
+      const minsInput = document.getElementById("autoshutdownMins");
+      if (minsInput && document.activeElement !== minsInput) {
+        const mins = (s.auto_shutdown_minutes != null) ? s.auto_shutdown_minutes : 15;
+        if (String(minsInput.value) !== String(mins)) minsInput.value = mins;
+      }
+      minsInput.disabled = !shutdownOn;
       let detail = "Snapshots: " + s.snapshots_taken;
       if (s.last_snapshot_at) detail += " · Last: " + s.last_snapshot_at;
       if (s.last_snapshot_path) detail += "\\n" + s.last_snapshot_path;
@@ -791,6 +855,44 @@
         alert(e.message);
       }
     };
+    document.getElementById("btnToggleSnaps").onclick = async () => {
+      try {
+        const cur = latestServiceState && latestServiceState.snapshots_enabled !== false;
+        await jput("/api/settings", { snapshots_enabled: !cur });
+        await refreshService();
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+    document.getElementById("btnToggleAutoshutdown").onclick = async () => {
+      try {
+        const cur = latestServiceState && latestServiceState.auto_shutdown_enabled !== false;
+        await jput("/api/settings", { auto_shutdown_enabled: !cur });
+        await refreshService();
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+    async function commitAutoshutdownMinutes() {
+      const el = document.getElementById("autoshutdownMins");
+      const raw = parseFloat(el.value);
+      if (!Number.isFinite(raw)) return;
+      const clamped = Math.max(1, Math.min(1440, raw));
+      if (clamped !== raw) el.value = clamped;
+      const cur = latestServiceState ? latestServiceState.auto_shutdown_minutes : null;
+      if (cur != null && Number(cur) === clamped) return;
+      try {
+        await jput("/api/settings", { auto_shutdown_minutes: clamped });
+        await refreshService();
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+    document.getElementById("autoshutdownMins").addEventListener("change", commitAutoshutdownMinutes);
+    document.getElementById("autoshutdownMins").addEventListener("blur", commitAutoshutdownMinutes);
+    document.getElementById("autoshutdownMins").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); commitAutoshutdownMinutes(); }
+    });
     document.getElementById("btnOpenSnapshotFolder").onclick = async () => {
       try {
         await jpost("/api/folder/open-snapshot-dir");

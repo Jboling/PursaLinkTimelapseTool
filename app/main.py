@@ -45,6 +45,9 @@ class UserSettingsPayload(BaseModel):
     clear_zone_y_min: float | None = None
     clear_zone_y_max: float | None = None
     clear_zone_wait_seconds: float | None = None
+    snapshots_enabled: bool | None = None
+    auto_shutdown_enabled: bool | None = None
+    auto_shutdown_minutes: float | None = None
 
 
 class BrowseFolderPayload(BaseModel):
@@ -455,8 +458,12 @@ async def put_settings(body: UserSettingsPayload):
 async def service_state():
     st = runtime.state
     rt = runtime
+    s = load_user_settings(settings_path())
     return {
         "running": st.running,
+        "snapshots_enabled": s.snapshots_enabled,
+        "auto_shutdown_enabled": s.auto_shutdown_enabled,
+        "auto_shutdown_minutes": s.auto_shutdown_minutes,
         "last_snapshot_at": st.last_snapshot_at,
         "last_snapshot_path": st.last_snapshot_path,
         "snapshots_taken": st.snapshots_taken,

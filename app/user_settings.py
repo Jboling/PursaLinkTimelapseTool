@@ -57,6 +57,20 @@ class UserSettings(BaseModel):
     clear_zone_wait_seconds: float = Field(
         5.0, ge=0.5, le=30.0, description="Max wait for clear-zone before forcing snapshot."
     )
+    snapshots_enabled: bool = Field(
+        True,
+        description="When false, the capture service still runs for monitoring but does not save snapshots.",
+    )
+    auto_shutdown_enabled: bool = Field(
+        True,
+        description="When true, the app shuts down after auto_shutdown_minutes of non-PRINTING state.",
+    )
+    auto_shutdown_minutes: float = Field(
+        15.0,
+        ge=1.0,
+        le=1440.0,
+        description="Minutes of non-PRINTING state before auto-shutdown fires (when enabled).",
+    )
 
 
 def default_user_settings() -> UserSettings:
