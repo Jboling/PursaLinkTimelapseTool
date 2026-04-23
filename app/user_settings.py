@@ -5,6 +5,14 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 SnapshotMode = Literal["axis_z", "sdpos_layer"]
+# Camera position around the bed as a 3x3 grid with the center excluded.
+# Values describe where the camera physically sits relative to the bed;
+# the "farthest from camera" point per layer is chosen in the opposite direction.
+CameraSide = Literal[
+    "front_left", "front", "front_right",
+    "left", "right",
+    "back_left", "back", "back_right",
+]
 
 
 class UserSettings(BaseModel):
@@ -13,7 +21,15 @@ class UserSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     snapshot_interval_seconds: float = Field(
-        30.0, ge=1.0, le=86400.0, description="Seconds between snapshots"
+        30.0,
+        ge=1.0,
+        le=86400.0,
+        description=(
+            "Worker poll interval (seconds). Controls how often the app polls "
+            "the printer for state and re-evaluates sdpos for a potential "
+            "snapshot. Lower = more responsive layer detection, higher = less "
+            "load on the printer."
+        ),
     )
     output_dir: str = Field(
         "captures", description="Folder for saved images (relative or absolute)"
@@ -48,14 +64,49 @@ class UserSettings(BaseModel):
     )
     clear_zone_enabled: bool = Field(
         False,
-        description="When true (sdpos_layer), wait for toolhead XY to enter clear zone before snapshot.",
+        description=(
+            "When true (sdpos_layer), wait each layer until the toolhead reaches the "
+            "point furthest from the camera (computed per layer from parsed XY moves) "
+            "before taking the snapshot."
+        ),
     )
-    clear_zone_x_min: float = Field(170.0, description="Clear-zone X minimum (mm)")
-    clear_zone_x_max: float = Field(260.0, description="Clear-zone X maximum (mm)")
-    clear_zone_y_min: float = Field(170.0, description="Clear-zone Y minimum (mm)")
-    clear_zone_y_max: float = Field(260.0, description="Clear-zone Y maximum (mm)")
+    camera_side: CameraSide = Field(
+        "front",
+        description=(
+            "Where the camera sits relative to the bed (3x3 grid around the bed, "
+            "center excluded). 'Farthest from camera' is picked as the XY point in "
+            "the opposite direction: e.g. 'front' -> max Y, 'front_left' -> max X+Y, "
+            "'back_right' -> min X+Y."
+        ),
+    )
+    clear_zone_xy_tolerance_mm: float = Field(
+        5.0,
+        ge=0.1,
+        le=50.0,
+        description=(
+            "Live XY proximity (mm) to the per-layer target that also fires the snap, "
+            "in case sdpos advances past the target between polls."
+        ),
+    )
+    clear_zone_wait_enabled: bool = Field(
+        True,
+        description=(
+            "When true, cap the per-layer clear-zone wait at "
+            "clear_zone_wait_seconds and force a snapshot at the current "
+            "toolhead position on timeout. When false, wait indefinitely for "
+            "the sdpos target or the XY tolerance match (recommended only "
+            "when sdpos is reliable)."
+        ),
+    )
     clear_zone_wait_seconds: float = Field(
-        5.0, ge=0.5, le=30.0, description="Max wait for clear-zone before forcing snapshot."
+        30.0,
+        ge=0.5,
+        le=600.0,
+        description=(
+            "Max seconds to wait for the dynamic target per layer before forcing a "
+            "snapshot at the current toolhead position. Ignored when "
+            "clear_zone_wait_enabled is false."
+        ),
     )
     snapshots_enabled: bool = Field(
         True,

@@ -4,172 +4,574 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Prusa Snapshot Companion</title>
+  <link rel="icon" type="image/png" href="/static/favicon.png" />
+  <link rel="shortcut icon" type="image/png" href="/static/favicon.png" />
+  <link rel="apple-touch-icon" href="/static/favicon.png" />
   <style>
+    /* ------------------------------------------------------------------
+       Material Design 3 – dark theme tokens (no external dependencies).
+       See https://m3.material.io for the spec these tokens derive from.
+       ------------------------------------------------------------------ */
     :root {
-      --bg: #0f1419;
-      --panel: #1a2332;
-      --text: #e6edf3;
-      --muted: #8b949e;
-      --accent: #58a6ff;
-      --ok: #3fb950;
-      --warn: #d29922;
-      --err: #f85149;
-      --border: #30363d;
-      font-family: "Segoe UI", system-ui, sans-serif;
+      /* Surfaces — MD3 dark uses tonal elevation (lighter = more elevated). */
+      --md-surface:                          #10151b;
+      --md-surface-dim:                      #0b1015;
+      --md-surface-bright:                   #36383c;
+      --md-surface-container-lowest:         #0a0f14;
+      --md-surface-container-low:            #171d25;
+      --md-surface-container:                #1b222b;
+      --md-surface-container-high:           #252c36;
+      --md-surface-container-highest:        #303742;
+
+      --md-on-surface:                       #e2e6ea;
+      --md-on-surface-variant:               #b7c0cb;
+      --md-inverse-on-surface:               #1b222b;
+
+      --md-primary:                          #9ecaff;
+      --md-on-primary:                       #003258;
+      --md-primary-container:                #1f4872;
+      --md-on-primary-container:             #d3e4ff;
+
+      --md-secondary-container:              #2f3d52;
+      --md-on-secondary-container:           #d7e3f7;
+
+      --md-tertiary:                         #86d8a5;      /* “success” */
+      --md-on-tertiary:                      #003918;
+      --md-tertiary-container:               #205532;
+      --md-on-tertiary-container:            #a2f4c0;
+
+      --md-error:                            #ffb4ab;
+      --md-on-error:                         #690005;
+      --md-error-container:                  #5f1519;
+      --md-on-error-container:               #ffdad6;
+
+      --md-warning:                          #ffd07a;
+
+      --md-outline:                          #8b939e;
+      --md-outline-variant:                  #3a414b;
+
+      /* Shape scale */
+      --shape-xs: 4px;
+      --shape-sm: 8px;
+      --shape-md: 12px;
+      --shape-lg: 16px;
+      --shape-xl: 28px;
+      --shape-pill: 9999px;
+
+      /* Spacing grid (4dp base) */
+      --s-1: 4px;  --s-2: 8px;  --s-3: 12px;
+      --s-4: 16px; --s-5: 20px; --s-6: 24px;
+      --s-8: 32px; --s-10: 40px;
+
+      /* Typography — Roboto first, then system. */
+      font-family: "Roboto", "Roboto Flex", "Segoe UI", system-ui, -apple-system, sans-serif;
+      color-scheme: dark;
+
+      /* Legacy color aliases (kept so any inline style= that references them
+         still resolves). Prefer the --md-* tokens in new rules. */
+      --bg:     var(--md-surface);
+      --panel:  var(--md-surface-container);
+      --text:   var(--md-on-surface);
+      --muted:  var(--md-on-surface-variant);
+      --accent: var(--md-primary);
+      --ok:     var(--md-tertiary);
+      --warn:   var(--md-warning);
+      --err:    var(--md-error);
+      --border: var(--md-outline-variant);
     }
-    * { box-sizing: border-box; }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
     body {
-      margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
-      line-height: 1.5;
-    }
-    .wrap { max-width: 960px; margin: 0 auto; padding: 1.5rem; }
-    h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 1rem; }
-    h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 0.5rem; }
-    .grid { display: grid; gap: 1rem; }
-    @media (min-width: 800px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
-    .card {
-      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-      padding: 1rem 1.1rem;
-    }
-    .card.compact {
-      padding: 0.7rem 0.9rem;
-    }
-    .compact .row-tight {
-      display: flex;
-      gap: 0.5rem;
-      align-items: center;
-      flex-wrap: wrap;
-      margin-top: 0.4rem;
-    }
-    .compact .muted {
       margin: 0;
+      min-height: 100vh;
+      background: var(--md-surface);
+      color: var(--md-on-surface);
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.5;
+      letter-spacing: 0.25px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
     }
-    .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
-    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
-    input[type="text"], input[type="number"] {
-      width: 100%; padding: 0.45rem 0.5rem; border-radius: 6px;
-      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+
+    /* ------------------------------------------------------------------
+       Top app bar (MD3 “small” top app bar).
+       ------------------------------------------------------------------ */
+    .app-bar {
+      position: sticky; top: 0; z-index: 10;
+      background: var(--md-surface-container);
+      border-bottom: 1px solid var(--md-outline-variant);
     }
-    textarea {
-      width: 100%; padding: 0.45rem 0.5rem; border-radius: 6px;
-      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    .app-bar-inner {
+      max-width: 1080px; margin: 0 auto;
+      display: flex; align-items: center; gap: var(--s-3);
+      padding: 10px var(--s-4);
+      min-height: 56px;
+    }
+    .app-bar .app-icon {
+      width: 28px; height: 28px; border-radius: var(--shape-sm);
+      object-fit: contain; background: var(--md-surface-container-high);
+      padding: 3px;
+    }
+    .app-bar .app-title {
+      margin: 0; flex: 1;
+      font-size: 18px; font-weight: 500; letter-spacing: 0.15px;
+      color: var(--md-on-surface);
+    }
+    .app-bar a { color: var(--md-primary); text-decoration: none; font-weight: 500; }
+    .app-bar a:hover { text-decoration: underline; }
+
+    /* Page container */
+    .wrap {
+      max-width: 1080px; margin: 0 auto;
+      padding: var(--s-4) var(--s-4) var(--s-6);
+      display: flex; flex-direction: column; gap: var(--s-4);
+    }
+
+    /* ------------------------------------------------------------------
+       Typography scale.
+       ------------------------------------------------------------------ */
+    h1 { margin: 0; font-size: 22px; font-weight: 500; letter-spacing: 0; line-height: 28px; }
+    h2 {
+      margin: 0 0 var(--s-3);
+      font-size: 16px; font-weight: 500; line-height: 24px;
+      letter-spacing: 0.15px;
+      text-transform: none; color: var(--md-on-surface);
+    }
+    h3 {
+      margin: 0 0 var(--s-2);
+      font-size: 12px; font-weight: 500; line-height: 16px;
+      letter-spacing: 0.5px; text-transform: uppercase;
+      color: var(--md-on-surface-variant);
+    }
+    a { color: var(--md-primary); }
+    code {
       font-family: Consolas, "Courier New", monospace;
-      font-size: 0.8rem;
+      font-size: 0.9em;
+      background: var(--md-surface-container-high);
+      padding: 1px 6px; border-radius: var(--shape-xs);
     }
-    select {
-      width: 100%; padding: 0.45rem 0.5rem; border-radius: 6px;
-      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+
+    /* ------------------------------------------------------------------
+       Cards (MD3 filled card — elevation via tonal color).
+       ------------------------------------------------------------------ */
+    .card {
+      background: var(--md-surface-container);
+      border-radius: var(--shape-md);
+      padding: var(--s-4) var(--s-5);
+      border: none;
     }
-    input[type="checkbox"] { accent-color: var(--accent); width: 1rem; height: 1rem; }
+    .card.compact { padding: var(--s-3) var(--s-4); }
+
+    /* Subsection inside a card */
+    .settings-group {
+      background: var(--md-surface-container-low);
+      border-radius: var(--shape-sm);
+      padding: var(--s-3) var(--s-4);
+      margin-top: var(--s-3);
+    }
+    .settings-group:first-of-type { margin-top: 0; }
+
+    /* Info/help callout (MD3-style tonal banner) */
+    .help-box {
+      background: var(--md-surface-container-low);
+      border-left: 3px solid var(--md-primary);
+      padding: var(--s-3) var(--s-4);
+      border-radius: var(--shape-xs);
+      font-size: 13px; color: var(--md-on-surface-variant);
+      line-height: 1.55;
+    }
+    .help-box code { background: var(--md-surface-container-high); }
+    .help-box strong { color: var(--md-on-surface); font-weight: 500; }
+
+    /* ------------------------------------------------------------------
+       Layout helpers.
+       ------------------------------------------------------------------ */
+    .grid { display: grid; gap: var(--s-4); }
+    @media (min-width: 800px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
+    .row { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; }
+    .row-tight {
+      display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center;
+      margin-top: var(--s-3);
+    }
+    .compact .row-tight { margin-top: var(--s-2); }
+    .compact .muted { margin: 0; }
+
+    .divider { height: 1px; background: var(--md-outline-variant); border: 0; margin: var(--s-3) 0; }
+
+    /* ------------------------------------------------------------------
+       Form fields (MD3 outlined text field — simplified).
+       ------------------------------------------------------------------ */
+    label {
+      display: block;
+      font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
+      color: var(--md-on-surface-variant);
+      margin-bottom: var(--s-1);
+    }
+    input[type="text"],
+    input[type="number"],
+    select,
+    textarea {
+      width: 100%;
+      padding: 10px 12px;
+      background: transparent;
+      color: var(--md-on-surface);
+      border: 1px solid var(--md-outline-variant);
+      border-radius: var(--shape-xs);
+      font-family: inherit;
+      font-size: 14px; line-height: 20px; letter-spacing: 0.25px;
+      outline: none;
+      transition: border-color 120ms ease, box-shadow 120ms ease;
+    }
+    input[type="text"]:hover,
+    input[type="number"]:hover,
+    select:hover,
+    textarea:hover { border-color: var(--md-outline); }
+    input[type="text"]:focus,
+    input[type="number"]:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--md-primary);
+      box-shadow: inset 0 0 0 1px var(--md-primary);
+    }
+    input:disabled, select:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    textarea {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+    }
+
+    input[type="checkbox"] {
+      accent-color: var(--md-primary);
+      width: 18px; height: 18px;
+      flex-shrink: 0;
+    }
+
+    /* Inline checkbox rows — override the <label> block defaults so the
+       text next to a checkbox reads as body copy, not a form caption. */
+    label.check {
+      display: inline-flex; align-items: center; gap: var(--s-2);
+      color: var(--md-on-surface);
+      font-size: 14px; font-weight: 400; text-transform: none;
+      letter-spacing: 0.25px;
+      margin-bottom: 0;
+    }
+
+    /* ------------------------------------------------------------------
+       Buttons (MD3 pill, 40dp height).
+         .primary → filled button
+         .ghost   → outlined button (also used for tonal/text actions)
+         .danger  → filled error button
+       Keeping these class names so no JS has to change.
+       ------------------------------------------------------------------ */
     button {
-      cursor: pointer; border: none; border-radius: 8px; padding: 0.5rem 0.9rem;
-      font-weight: 600; font-size: 0.9rem;
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: var(--s-2);
+      cursor: pointer; border: 0;
+      height: 40px; padding: 0 20px;
+      border-radius: var(--shape-pill);
+      font-family: inherit; font-weight: 500; font-size: 14px; letter-spacing: 0.1px;
+      transition: background-color 120ms ease, color 120ms ease,
+                  box-shadow 120ms ease, filter 120ms ease, border-color 120ms ease;
+      user-select: none;
     }
-    button.primary { background: var(--accent); color: #0d1117; }
-    button.danger { background: #21262d; color: var(--err); border: 1px solid var(--border); }
-    button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--border); }
-    button:disabled { opacity: 0.45; cursor: not-allowed; }
-    pre {
-      margin: 0; font-size: 0.78rem; background: var(--bg); padding: 0.65rem;
-      border-radius: 8px; overflow: auto; max-height: 220px; border: 1px solid var(--border);
+    button.primary {
+      background: var(--md-primary);
+      color: var(--md-on-primary);
     }
-    .pill { font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 999px; background: #21262d; }
-    .pill.run { color: var(--ok); border: 1px solid rgba(63, 185, 80, 0.35); }
-    .pill.stop { color: var(--muted); border: 1px solid var(--border); }
-    .err { color: var(--err); font-size: 0.85rem; white-space: pre-wrap; }
-    .muted { color: var(--muted); font-size: 0.85rem; }
-    a { color: var(--accent); }
-    .field-with-btn { display: flex; gap: 0.5rem; align-items: stretch; }
+    button.primary:hover { filter: brightness(1.08); }
+    button.ghost {
+      background: transparent;
+      color: var(--md-primary);
+      border: 1px solid var(--md-outline);
+    }
+    button.ghost:hover { background: rgba(158, 202, 255, 0.08); border-color: var(--md-primary); }
+    button.danger {
+      background: var(--md-error-container);
+      color: var(--md-on-error-container);
+    }
+    button.danger:hover { filter: brightness(1.08); }
+    button:disabled {
+      opacity: 0.38; cursor: not-allowed; filter: none;
+      background: var(--md-surface-container-high);
+      color: var(--md-on-surface-variant);
+      border-color: var(--md-outline-variant);
+    }
+    /* Dense / secondary action buttons. */
+    button.dense {
+      height: 32px; padding: 0 14px; font-size: 13px;
+    }
+
+    /* ------------------------------------------------------------------
+       Chips (MD3 assist chip) — used for state indicators.
+       The pseudo-element “dot” means JS can still set pill.textContent
+       without wiping out the indicator.
+       ------------------------------------------------------------------ */
+    .pill {
+      display: inline-flex; align-items: center;
+      height: 28px; padding: 0 12px;
+      border-radius: var(--shape-sm);
+      background: transparent;
+      border: 1px solid var(--md-outline-variant);
+      color: var(--md-on-surface-variant);
+      font-size: 13px; font-weight: 500; letter-spacing: 0.1px;
+      white-space: nowrap;
+    }
+    .pill::before {
+      content: ""; flex-shrink: 0;
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--md-outline);
+      margin-right: 6px;
+    }
+    .pill.run {
+      background: rgba(134, 216, 165, 0.14);
+      color: var(--md-tertiary);
+      border-color: transparent;
+    }
+    .pill.run::before { background: var(--md-tertiary); }
+    .pill.stop {
+      background: transparent;
+      border-color: var(--md-outline-variant);
+      color: var(--md-on-surface-variant);
+    }
+    .pill.stop::before { background: var(--md-outline); }
+
+    /* ------------------------------------------------------------------
+       Fields with a trailing button (search-row pattern).
+       ------------------------------------------------------------------ */
+    .field-with-btn { display: flex; gap: var(--s-2); align-items: stretch; }
     .field-with-btn input[type="text"] { flex: 1; min-width: 0; }
-    .field-with-btn button { flex-shrink: 0; white-space: nowrap; }
-    .api-list { display: grid; gap: 0.5rem; }
-    .api-item {
-      display: grid; grid-template-columns: auto 1fr auto; gap: 0.6rem; align-items: center;
-      border: 1px solid var(--border); border-radius: 8px; padding: 0.55rem 0.6rem; background: var(--bg);
+    .field-with-btn button { flex-shrink: 0; white-space: nowrap; height: 44px; }
+
+    /* Muted/helper text */
+    .muted { color: var(--md-on-surface-variant); font-size: 13px; }
+    .err   { color: var(--md-error); font-size: 13px; white-space: pre-wrap; }
+
+    /* Preformatted JSON / logs */
+    pre {
+      margin: 0;
+      background: var(--md-surface-container-lowest);
+      color: var(--md-on-surface);
+      padding: var(--s-3);
+      border-radius: var(--shape-sm);
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px; line-height: 1.5;
+      overflow: auto;
+      max-height: 220px;
+      border: 1px solid var(--md-outline-variant);
     }
-    .api-method { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.03em; color: var(--accent); }
-    .api-path { font-family: Consolas, "Courier New", monospace; font-size: 0.8rem; }
-    .api-note { font-size: 0.74rem; color: var(--muted); margin-top: 0.12rem; }
+
+    /* ------------------------------------------------------------------
+       API console list (tonal surface rows).
+       ------------------------------------------------------------------ */
+    .api-list { display: grid; gap: var(--s-2); }
+    .api-item {
+      display: grid; grid-template-columns: auto 1fr auto;
+      gap: var(--s-3); align-items: center;
+      background: var(--md-surface-container-low);
+      border-radius: var(--shape-sm);
+      padding: var(--s-2) var(--s-3);
+    }
+    .api-method {
+      display: inline-block; align-self: start;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.6px;
+      color: var(--md-primary);
+      background: rgba(158, 202, 255, 0.10);
+      padding: 3px 8px; border-radius: var(--shape-xs);
+    }
+    .api-path { font-family: Consolas, "Courier New", monospace; font-size: 13px; }
+    .api-note { font-size: 12px; color: var(--md-on-surface-variant); margin-top: 2px; }
+
+    details.api-console > summary,
+    details.raw-json > summary,
+    details.temps-details > summary {
+      cursor: pointer; list-style: none; user-select: none;
+      font-size: 14px; font-weight: 500;
+      color: var(--md-primary);
+      padding: var(--s-2) 0;
+      display: inline-flex; align-items: center; gap: var(--s-2);
+    }
+    details.api-console > summary::-webkit-details-marker,
+    details.raw-json > summary::-webkit-details-marker,
+    details.temps-details > summary::-webkit-details-marker { display: none; }
+    details.api-console > summary::before,
+    details.raw-json > summary::before,
+    details.temps-details > summary::before {
+      content: "▸";
+      color: var(--md-on-surface-variant);
+      transition: transform 120ms ease;
+    }
+    details[open] > summary::before { transform: rotate(90deg); }
+
+    /* ------------------------------------------------------------------
+       Dashboard stats (MD3 “stat card”-ish tonal tiles).
+       ------------------------------------------------------------------ */
     .dash-stats {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));
-      gap: 0.65rem;
-      margin-bottom: 0.85rem;
+      grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr));
+      gap: var(--s-2);
+      margin-bottom: var(--s-3);
     }
     .dash-stat {
-      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-      padding: 0.45rem 0.5rem; text-align: center;
+      background: var(--md-surface-container-low);
+      border-radius: var(--shape-sm);
+      padding: var(--s-3);
+      text-align: left;
     }
-    .dash-stat .lbl { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-    .dash-stat .val { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
-    .dash-stat .sub { font-size: 0.72rem; color: var(--muted); margin-top: 0.15rem; }
-    .temp-charts {
-      display: grid;
-      gap: 0.75rem;
-      margin-top: 0.5rem;
+    .dash-stat .lbl {
+      font-size: 11px; font-weight: 500; letter-spacing: 0.5px;
+      color: var(--md-on-surface-variant);
+      text-transform: uppercase;
     }
-    @media (min-width: 640px) {
+    .dash-stat .val {
+      font-size: 22px; font-weight: 400; line-height: 28px;
+      font-variant-numeric: tabular-nums;
+      color: var(--md-on-surface);
+      margin-top: 2px;
+    }
+    .dash-stat .sub {
+      font-size: 11px; color: var(--md-on-surface-variant);
+      margin-top: 2px;
+    }
+
+    /* Temperature charts
+       - Default: stacked (used when the printer card sits in a 2-col row
+         next to the Stream View, since the card itself is narrow there).
+       - 640–799px viewports: the printer card is full-width (grid-2 hasn't
+         kicked in yet), so we show the two charts side-by-side. */
+    .temp-charts { display: grid; gap: var(--s-3); margin-top: var(--s-2); grid-template-columns: 1fr; }
+    @media (min-width: 640px) and (max-width: 799.98px) {
       .temp-charts { grid-template-columns: 1fr 1fr; }
     }
     .temp-chart-wrap {
-      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-      padding: 0.4rem 0.5rem 0.5rem;
+      background: var(--md-surface-container-low);
+      border-radius: var(--shape-sm);
+      padding: var(--s-3);
     }
     .temp-chart-wrap h3 {
-      margin: 0 0 0.35rem; font-size: 0.72rem; font-weight: 600; color: var(--muted);
-      text-transform: uppercase; letter-spacing: 0.05em;
+      margin: 0;
+      font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase;
+      color: var(--md-on-surface-variant);
     }
     .temp-chart-head {
       display: flex; align-items: baseline; justify-content: space-between;
-      gap: 0.5rem; margin-bottom: 0.35rem;
+      gap: var(--s-2); margin-bottom: var(--s-2);
     }
-    .temp-chart-head h3 { margin: 0; }
-    .temp-chart-vals {
-      font-variant-numeric: tabular-nums; font-size: 0.9rem; line-height: 1.1;
+    .temp-chart-vals,
+    .temps-summary-vals {
+      font-variant-numeric: tabular-nums; font-size: 14px; line-height: 1.2;
       white-space: nowrap;
     }
-    .temp-chart-vals .cur { font-weight: 700; color: var(--fg); }
-    .temp-chart-vals .sep { color: var(--muted); margin: 0 0.15rem; }
-    .temp-chart-vals .tgt { color: var(--muted); }
+    .temp-chart-vals .cur,
+    .temps-summary-vals .cur { font-weight: 500; color: var(--md-on-surface); }
+    .temp-chart-vals .sep,
+    .temps-summary-vals .sep { color: var(--md-on-surface-variant); margin: 0 4px; }
+    .temp-chart-vals .tgt,
+    .temps-summary-vals .tgt { color: var(--md-on-surface-variant); }
     .temp-chart-wrap canvas {
       display: block; width: 100%; height: 140px; border-radius: 4px;
     }
+
+    /* Collapsible temperatures block ------------------------------------
+       Summary pairs the "Temperatures" label with live Bed / Nozzle
+       readouts so the values stay visible even when the charts are
+       collapsed. */
+    details.temps-details { margin-top: var(--s-2); }
+    details.temps-details > summary {
+      display: flex; align-items: baseline;
+      gap: var(--s-3);
+      color: var(--md-on-surface);
+      flex-wrap: wrap;
+    }
+    .temps-summary-title {
+      font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase;
+      color: var(--md-on-surface-variant); font-weight: 500;
+    }
+    .temps-summary-vals {
+      display: inline-flex; align-items: baseline; gap: 6px;
+      font-weight: 400;
+    }
+    .temps-summary-vals .lbl {
+      font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase;
+      color: var(--md-on-surface-variant);
+    }
+    .temps-summary-vals .mid-dot {
+      color: var(--md-on-surface-variant); margin: 0 4px;
+    }
+
+    /* ------------------------------------------------------------------
+       Stream preview frame.
+       ------------------------------------------------------------------ */
     .preview-wrap {
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: var(--bg);
-      resize: both;
-      overflow: auto;
-      min-width: 220px;
-      min-height: 160px;
-      width: 100%;
-      max-width: 100%;
+      border-radius: var(--shape-md);
+      background: #000;
+      resize: both; overflow: auto;
+      min-width: 220px; min-height: 160px;
+      width: 100%; max-width: 100%;
       aspect-ratio: 16 / 9;
     }
     .preview-wrap iframe {
-      width: 100%;
-      height: 100%;
-      display: block;
-      border-radius: 8px;
-      background: #000;
-      border: 0;
+      width: 100%; height: 100%; display: block;
+      border-radius: var(--shape-md); background: #000; border: 0;
     }
-    details.raw-json { margin-top: 0.65rem; }
-    details.raw-json summary {
-      cursor: pointer; font-size: 0.8rem; color: var(--muted); user-select: none;
+
+    /* ------------------------------------------------------------------
+       Camera position chooser (3x3 radio grid).
+       ------------------------------------------------------------------ */
+    .cam-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: var(--s-1);
+      max-width: 220px; margin-top: var(--s-1);
     }
-    details.raw-json pre { margin-top: 0.4rem; max-height: 160px; }
+    .cam-cell {
+      height: 44px;
+      display: flex; align-items: center; justify-content: center;
+      padding: 0 var(--s-2);
+      background: var(--md-surface-container-low);
+      color: var(--md-on-surface);
+      border: 1px solid var(--md-outline-variant);
+      border-radius: var(--shape-sm);
+      font-size: 12px; font-weight: 500; letter-spacing: 0.1px;
+      cursor: pointer;
+      transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .cam-cell:hover { border-color: var(--md-primary); }
+    .cam-cell.selected {
+      background: var(--md-primary-container);
+      color: var(--md-on-primary-container);
+      border-color: transparent;
+    }
+    .cam-cell-bed {
+      height: 44px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--md-on-surface-variant);
+      background: transparent;
+      border: 1px dashed var(--md-outline-variant);
+      border-radius: var(--shape-sm);
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
+      user-select: none;
+    }
+
+    /* Raw JSON details */
+    details.raw-json { margin-top: var(--s-2); }
+    details.raw-json pre { margin-top: var(--s-2); max-height: 180px; }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <p style="margin: 0 0 0.75rem; font-size: 0.9rem;"><a href="/tools/photo-video">Photos → video tool</a> <span class="muted">(folder of images → MP4)</span></p>
-    <h1>Prusa snapshot companion</h1>
-    <p class="muted">PrusaLink status + RTSP snapshots (ffmpeg). Configure secrets in <code>.env</code>.</p>
+  <header class="app-bar">
+    <div class="app-bar-inner">
+      <img src="/static/favicon.png" alt="" class="app-icon" />
+      <h1 class="app-title">Prusa Snapshot Companion</h1>
+      <a href="/tools/photo-video" title="Turn a folder of snapshots into an MP4">Photos → video</a>
+    </div>
+  </header>
 
-    <div class="card compact" style="margin-top: 1.25rem;">
-      <div class="row" style="justify-content: space-between; align-items: center;">
-        <h2 style="margin: 0;">Capture service</h2>
+  <main class="wrap">
+    <!-- Capture service ------------------------------------------------ -->
+    <section class="card compact" aria-labelledby="svcTitle">
+      <div class="row" style="justify-content: space-between;">
+        <h2 id="svcTitle" style="margin: 0;">Capture service</h2>
         <div class="row">
           <span id="svcPill" class="pill stop">Service: …</span>
           <span id="printPill" class="pill stop">State: …</span>
@@ -178,194 +580,247 @@
       <div class="row-tight">
         <button class="primary" id="btnStart" type="button">Start</button>
         <button class="danger" id="btnStop" type="button">Stop</button>
-        <button class="ghost" id="btnToggleSnaps" type="button" title="When off, the service still monitors state and layer progress but does not save snapshot files.">Snapshots: …</button>
-        <button class="ghost" id="btnToggleAutoshutdown" type="button" title="When on, the app shuts down after the configured idle minutes of non-PRINTING state.">Auto-shutdown: …</button>
-        <label for="autoshutdownMins" class="muted" style="margin: 0;">after</label>
+        <button class="ghost dense" id="btnToggleSnaps" type="button" title="When off, the service still monitors state and layer progress but does not save snapshot files.">Snapshots: …</button>
+        <button class="ghost dense" id="btnToggleAutoshutdown" type="button" title="When on, the app shuts down after the configured idle minutes of non-PRINTING state.">Auto-shutdown: …</button>
+        <span class="muted" style="margin: 0;">after</span>
         <input type="number" id="autoshutdownMins" min="1" max="1440" step="1" style="width: 5rem;" title="Minutes of non-PRINTING state before auto-shutdown fires." />
         <span class="muted">min</span>
-        <button class="ghost" id="btnTestSnap" type="button">Test snapshot</button>
-        <button class="ghost" id="btnOpenSnapshotFolder" type="button">Open snapshot folder</button>
-        <p class="muted" id="layerDetail">Layer: — / —</p>
+        <button class="ghost dense" id="btnTestSnap" type="button">Test snapshot</button>
+        <button class="ghost dense" id="btnOpenSnapshotFolder" type="button">Open snapshot folder</button>
+        <span class="pill stop" id="layerDetail">Layer: — / —</span>
       </div>
-      <p class="muted" id="svcDetail" style="white-space: pre-wrap; margin-top: 0.45rem;">Last snap: —</p>
-      <p class="err" id="svcErr" style="margin-top: 0.45rem;"></p>
-    </div>
+      <p class="muted" id="svcDetail" style="white-space: pre-wrap; margin-top: var(--s-3);">Last snap: —</p>
+      <p class="err" id="svcErr" style="margin-top: var(--s-2);"></p>
+    </section>
 
-    <div class="card" style="margin-top: 1rem;">
-      <h2>Stream View</h2>
-      <p class="muted">Embed a browser-playable stream URL (for example go2rtc stream page). Drag lower-right corner to resize.</p>
-      <div class="row" style="margin: 0.5rem 0;">
-        <label for="streamUrl" style="margin: 0;">Stream URL</label>
-        <input type="text" id="streamUrl" placeholder="http://127.0.0.1:1984/stream.html?src=coreone" style="min-width: 18rem; flex: 1;" />
-        <button class="ghost" id="btnStreamLoad" type="button">Load stream</button>
-      </div>
-      <div class="preview-wrap">
-        <iframe id="streamFrame" title="Stream view" loading="lazy" referrerpolicy="no-referrer"></iframe>
-      </div>
-    </div>
-
-    <div class="grid" style="margin-top: 1rem;">
-      <div class="card">
-        <h2>Printer</h2>
+    <!-- Printer dashboard + Stream view (side-by-side on ≥800px) ------- -->
+    <div class="grid grid-2" style="align-items: start;">
+      <section class="card printer-card" aria-labelledby="printerTitle">
+        <h2 id="printerTitle">Printer</h2>
         <div class="dash-stats" id="dashStats" aria-live="polite"></div>
-        <div class="temp-charts">
-          <div class="temp-chart-wrap">
-            <div class="temp-chart-head">
-              <h3>Bed °C (current vs target)</h3>
-              <div class="temp-chart-vals" id="bedVals">
-                <span class="cur" id="bedCurVal">—</span><span class="sep">/</span><span class="tgt" id="bedTgtVal">—</span>
+
+        <details class="temps-details" open>
+          <summary>
+            <span class="temps-summary-title">Temperatures</span>
+            <span class="temps-summary-vals" aria-hidden="true">
+              <span class="lbl">Bed</span>
+              <span class="cur" id="bedCurVal">—</span><span class="sep">/</span><span class="tgt" id="bedTgtVal">—</span>
+              <span class="mid-dot">·</span>
+              <span class="lbl">Nozzle</span>
+              <span class="cur" id="nozzleCurVal">—</span><span class="sep">/</span><span class="tgt" id="nozzleTgtVal">—</span>
+            </span>
+          </summary>
+          <div class="temp-charts">
+            <div class="temp-chart-wrap">
+              <div class="temp-chart-head">
+                <h3>Bed °C</h3>
               </div>
+              <canvas id="chartBed" width="400" height="280"></canvas>
             </div>
-            <canvas id="chartBed" width="400" height="280"></canvas>
-          </div>
-          <div class="temp-chart-wrap">
-            <div class="temp-chart-head">
-              <h3>Nozzle °C (current vs target)</h3>
-              <div class="temp-chart-vals" id="nozzleVals">
-                <span class="cur" id="nozzleCurVal">—</span><span class="sep">/</span><span class="tgt" id="nozzleTgtVal">—</span>
+            <div class="temp-chart-wrap">
+              <div class="temp-chart-head">
+                <h3>Nozzle °C</h3>
               </div>
+              <canvas id="chartNozzle" width="400" height="280"></canvas>
             </div>
-            <canvas id="chartNozzle" width="400" height="280"></canvas>
           </div>
+          <p class="muted" id="tempChartHint" style="margin: var(--s-3) 0 0; font-size: 12px;">History builds while this page is open (last ~45 min, sampled every refresh).</p>
+        </details>
+      </section>
+
+      <section class="card" aria-labelledby="streamTitle">
+        <h2 id="streamTitle">Stream view</h2>
+        <div class="preview-wrap">
+          <iframe id="streamFrame" title="Stream view" loading="lazy" referrerpolicy="no-referrer"></iframe>
         </div>
-        <p class="muted" id="tempChartHint" style="margin: 0.5rem 0 0; font-size: 0.75rem;">History builds while this page is open (last ~45 min, sampled every refresh).</p>
-        <details class="raw-json"><summary>Raw JSON</summary><pre id="printerJson">Loading…</pre></details>
-        <p class="muted" id="envHint" style="margin-top: 0.65rem;"></p>
-      </div>
+        <div class="field-with-btn" style="margin-top: var(--s-3);">
+          <input type="text" id="streamUrl" placeholder="http://&lt;host&gt;:1984/stream.html?src=coreone" />
+          <button class="ghost" id="btnStreamLoad" type="button">Load</button>
+        </div>
+        <p class="muted" style="margin: var(--s-2) 0 0;">Embed a browser-playable stream URL (for example a go2rtc stream page). The default follows whatever host you loaded this page from, so it works from a phone over LAN / Tailscale as well. Drag the lower-right corner to resize.</p>
+      </section>
     </div>
 
-    <div class="card" style="margin-top: 1rem;">
-      <h2>API Console</h2>
-      <p class="muted">One-click calls for the most useful endpoints.</p>
-      <div class="api-list" style="margin-top: 0.75rem;">
-        <div class="api-item">
-          <div class="api-method">GET</div>
-          <div><div class="api-path">/api/health</div><div class="api-note">Basic app heartbeat.</div></div>
-          <button class="ghost api-run" data-method="GET" data-path="/api/health" type="button">Run</button>
-        </div>
-        <div class="api-item">
-          <div class="api-method">GET</div>
-          <div><div class="api-path">/api/env</div><div class="api-note">Loaded runtime config (non-secret).</div></div>
-          <button class="ghost api-run" data-method="GET" data-path="/api/env" type="button">Run</button>
-        </div>
-        <div class="api-item">
-          <div class="api-method">GET</div>
-          <div><div class="api-path">/api/printer/status</div><div class="api-note">Current printer + job snapshot.</div></div>
-          <button class="ghost api-run" data-method="GET" data-path="/api/printer/status" type="button">Run</button>
-        </div>
-        <div class="api-item">
-          <div class="api-method">GET</div>
-          <div><div class="api-path">/api/metrics/sdpos</div><div class="api-note">UDP metrics and current sdpos.</div></div>
-          <button class="ghost api-run" data-method="GET" data-path="/api/metrics/sdpos" type="button">Run</button>
-        </div>
-        <div class="api-item">
-          <div class="api-method">GET</div>
-          <div><div class="api-path">/api/service</div><div class="api-note">Worker status, G-code download, layer progress.</div></div>
-          <button class="ghost api-run" data-method="GET" data-path="/api/service" type="button">Run</button>
-        </div>
-        <div class="api-item">
-          <div class="api-method">POST</div>
-          <div><div class="api-path">/api/service/start</div><div class="api-note">Start capture worker.</div></div>
-          <button class="ghost api-run" data-method="POST" data-path="/api/service/start" type="button">Run</button>
-        </div>
-        <div class="api-item">
-          <div class="api-method">POST</div>
-          <div><div class="api-path">/api/service/stop</div><div class="api-note">Stop capture worker.</div></div>
-          <button class="ghost api-run" data-method="POST" data-path="/api/service/stop" type="button">Run</button>
-        </div>
-        <div class="api-item">
-          <div class="api-method">POST</div>
-          <div><div class="api-path">/api/snapshot/test</div><div class="api-note">Force one RTSP snapshot.</div></div>
-          <button class="ghost api-run" data-method="POST" data-path="/api/snapshot/test" type="button">Run</button>
-        </div>
-      </div>
-      <div class="row" style="margin-top: 0.75rem;">
-        <span class="muted" id="apiLastCall">Last call: —</span>
-        <span class="muted" id="apiStatus"></span>
-        <button class="ghost" id="btnApiCopy" type="button">Copy response</button>
-      </div>
-      <pre id="apiResult" style="margin-top: 0.65rem;">{}</pre>
-    </div>
+    <!-- Settings ------------------------------------------------------ -->
+    <section class="card" aria-labelledby="settingsTitle">
+      <h2 id="settingsTitle">Settings</h2>
+      <p class="muted" style="margin: 0 0 var(--s-3);">Saved to <code id="settingsPath"></code></p>
 
-    <div class="card" style="margin-top: 1rem;">
-      <h2>Settings</h2>
-      <p class="muted">Saved to <span id="settingsPath"></span></p>
-      <div class="grid grid-2" style="margin-top: 0.75rem;">
-        <div>
-          <label for="interval">Snapshot interval (seconds)</label>
-          <input type="number" id="interval" min="1" step="1" />
-        </div>
-        <div>
-          <label for="outdir">Output folder</label>
-          <div class="field-with-btn">
-            <input type="text" id="outdir" autocomplete="off" placeholder="captures or full path" />
-            <button class="ghost" type="button" id="btnBrowseFolder" title="Native folder picker (this PC only)">Browse…</button>
+      <!-- Capture behavior --------------------------------------- -->
+      <div class="settings-group">
+        <h3>Capture behavior</h3>
+        <div class="grid grid-2">
+          <div>
+            <label for="interval" title="How often the app polls the printer for state and re-checks sdpos to decide whether to snap.">Printer poll interval (seconds)</label>
+            <input type="number" id="interval" min="1" step="1" />
           </div>
-          <p class="muted" id="outdirAbsolute" style="margin: 0.35rem 0 0; font-size: 0.8rem; word-break: break-all;"></p>
+          <div>
+            <label for="snapshotMode">Snapshot mode</label>
+            <select id="snapshotMode">
+              <option value="sdpos_layer">sdpos_layer — M331/M334 per-layer</option>
+              <option value="axis_z">axis_z — legacy Z change</option>
+            </select>
+          </div>
+          <div>
+            <label for="skipUnchanged">Skip if unchanged (seconds, 0 = off)</label>
+            <input type="number" id="skipUnchanged" min="0" step="1" />
+          </div>
+          <div>
+            <label for="jpegq">JPEG quality (-q:v 1–31, lower = better)</label>
+            <input type="number" id="jpegq" min="1" max="31" step="1" />
+          </div>
         </div>
-        <div>
-          <label for="jpegq">JPEG quality (-q:v 1–31, lower = better)</label>
-          <input type="number" id="jpegq" min="1" max="31" step="1" />
-        </div>
-        <div>
-          <label for="skipUnchanged">Skip if unchanged (seconds, 0 = off)</label>
-          <input type="number" id="skipUnchanged" min="0" step="1" />
-        </div>
-        <div>
-          <label for="snapshotMode">Snapshot mode</label>
-          <select id="snapshotMode" style="width: 100%; padding: 0.45rem 0.5rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text);">
-            <option value="sdpos_layer">sdpos_layer (M331/M334 + per-layer)</option>
-            <option value="axis_z">axis_z (legacy Z change)</option>
-          </select>
-        </div>
-        <div class="row" style="align-items: flex-end; flex-wrap: wrap;">
-          <label class="row" style="gap: 0.35rem;">
-            <input type="checkbox" id="clearZoneEnabled" />
-            Wait for clear-zone before layer snapshot
-          </label>
-        </div>
-        <div>
-          <label for="clearZoneXMin">Clear zone X min</label>
-          <input type="number" id="clearZoneXMin" step="0.1" />
-        </div>
-        <div>
-          <label for="clearZoneXMax">Clear zone X max</label>
-          <input type="number" id="clearZoneXMax" step="0.1" />
-        </div>
-        <div>
-          <label for="clearZoneYMin">Clear zone Y min</label>
-          <input type="number" id="clearZoneYMin" step="0.1" />
-        </div>
-        <div>
-          <label for="clearZoneYMax">Clear zone Y max</label>
-          <input type="number" id="clearZoneYMax" step="0.1" />
-        </div>
-        <div>
-          <label for="clearZoneWait">Clear-zone wait timeout (seconds)</label>
-          <input type="number" id="clearZoneWait" min="0.5" max="30" step="0.5" />
-        </div>
-        <div style="grid-column: 1 / -1;">
-          <label for="template">Filename template (no extension; tokens: timestamp, printer_state, job_id, progress, job_state; axis_z / z = 6-digit µm for sorting; axis_z_mm = readable mm)</label>
-          <input type="text" id="template" autocomplete="off" />
-        </div>
-        <div class="row" style="align-items: flex-end; flex-wrap: wrap;">
-          <label class="row" style="gap: 0.35rem;">
-            <input type="checkbox" id="subfolder" />
-            Subfolder by date (YYYY-MM-DD)
-          </label>
-          <label class="row" style="gap: 0.35rem;">
-            <input type="checkbox" id="subfolderJob" />
-            Subfolder by job id (e.g. …/2026-04-18/54/)
-          </label>
-        </div>
-        <p class="muted" style="grid-column: 1 / -1; margin: 0;">Periodic captures run only while <code>printer.state</code> is <code>PRINTING</code>. Use <strong>Test snapshot</strong> to verify RTSP/ffmpeg any time. For phone / Tailscale, set <code>HOST=0.0.0.0</code> in <code>.env</code>. <strong>Browse…</strong> uses a Windows folder dialog and only works when this page is opened at <code>127.0.0.1</code> or <code>localhost</code> (not from another device’s IP).</p>
       </div>
-      <div class="row" style="margin-top: 1rem;">
+
+      <!-- Clear-zone --------------------------------------------- -->
+      <div class="settings-group">
+        <h3>Clear-zone (sdpos_layer)</h3>
+        <label class="check" style="margin-bottom: var(--s-3);"
+               title="When on, each layer waits until the toolhead reaches the point furthest from the selected camera side (computed from parsed g-code XY moves) before snapping.">
+          <input type="checkbox" id="clearZoneEnabled" />
+          Dynamic clear-zone — snap when toolhead is farthest from camera
+        </label>
+        <div class="grid grid-2">
+          <div>
+            <label>Camera position — pick the cell where your camera sits</label>
+            <div class="cam-grid" id="cameraGrid" role="radiogroup" aria-label="Camera position relative to printer bed">
+              <button type="button" class="cam-cell" data-value="back_left" title="Camera at back-left. Snap will target the front-right area (max X, min Y).">Back-L</button>
+              <button type="button" class="cam-cell" data-value="back" title="Camera behind the printer. Snap will target the front of the bed (min Y).">Back</button>
+              <button type="button" class="cam-cell" data-value="back_right" title="Camera at back-right. Snap will target the front-left area (min X, min Y).">Back-R</button>
+              <button type="button" class="cam-cell" data-value="left" title="Camera on the left. Snap will target the right side (max X).">Left</button>
+              <div class="cam-cell-bed" aria-hidden="true">bed</div>
+              <button type="button" class="cam-cell" data-value="right" title="Camera on the right. Snap will target the left side (min X).">Right</button>
+              <button type="button" class="cam-cell" data-value="front_left" title="Camera at front-left. Snap will target the back-right area (max X, max Y).">Front-L</button>
+              <button type="button" class="cam-cell" data-value="front" title="Camera in front of the printer. Snap will target the back of the bed (max Y).">Front</button>
+              <button type="button" class="cam-cell" data-value="front_right" title="Camera at front-right. Snap will target the back-left area (min X, max Y).">Front-R</button>
+            </div>
+            <input type="hidden" id="cameraSide" value="front" />
+            <p class="muted" id="cameraSideLabel" style="margin: var(--s-1) 0 0; font-size: 12px;"></p>
+          </div>
+          <div>
+            <div>
+              <label for="clearZoneTol" title="Also snaps if live toolhead XY is within this many mm of the per-layer target point.">XY target tolerance (mm)</label>
+              <input type="number" id="clearZoneTol" min="0.1" max="50" step="0.1" />
+            </div>
+            <div style="margin-top: var(--s-3);">
+              <label class="check" style="margin-bottom: var(--s-1);"
+                     title="When on, the clear-zone waits at most N seconds per layer before snapping at the current toolhead position. Turn off to wait indefinitely for sdpos / XY target (only recommended when sdpos is reliable).">
+                <input type="checkbox" id="clearZoneWaitEnabled" />
+                Clear-zone wait timeout (seconds)
+              </label>
+              <input type="number" id="clearZoneWait" min="0.5" max="600" step="0.5" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Output -------------------------------------------------- -->
+      <div class="settings-group">
+        <h3>Output</h3>
+        <div class="grid grid-2">
+          <div>
+            <label for="outdir">Output folder</label>
+            <div class="field-with-btn">
+              <input type="text" id="outdir" autocomplete="off" placeholder="captures or full path" />
+              <button class="ghost" type="button" id="btnBrowseFolder" title="Native folder picker (this PC only)">Browse…</button>
+            </div>
+            <p class="muted" id="outdirAbsolute" style="margin: var(--s-1) 0 0; font-size: 12px; word-break: break-all;"></p>
+          </div>
+          <div class="row" style="align-items: center; gap: var(--s-4); align-self: end;">
+            <label class="check">
+              <input type="checkbox" id="subfolder" />
+              Subfolder by date (YYYY-MM-DD)
+            </label>
+            <label class="check">
+              <input type="checkbox" id="subfolderJob" />
+              Subfolder by job id
+            </label>
+          </div>
+          <div style="grid-column: 1 / -1;">
+            <label for="template">Filename template (no extension; tokens: <code>timestamp</code>, <code>printer_state</code>, <code>job_id</code>, <code>progress</code>, <code>job_state</code>; <code>axis_z</code>/<code>z</code> = 6-digit µm sortable; <code>axis_z_mm</code> = readable mm)</label>
+            <input type="text" id="template" autocomplete="off" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Diagnostics -------------------------------------------- -->
+      <div class="settings-group">
+        <h3>Diagnostics</h3>
+        <p class="muted" id="envHint" style="margin: 0;"></p>
+        <details class="raw-json" style="margin-top: var(--s-2);">
+          <summary>Raw printer JSON</summary>
+          <pre id="printerJson">Loading…</pre>
+        </details>
+      </div>
+
+      <div class="help-box" style="margin-top: var(--s-3);">
+        Periodic captures run only while <code>printer.state</code> is <code>PRINTING</code>. Use <strong>Test snapshot</strong> to verify RTSP/ffmpeg at any time. For phone / Tailscale access, set <code>HOST=0.0.0.0</code> in <code>.env</code>. <strong>Browse…</strong> uses a native folder dialog and only works when this page is opened at <code>127.0.0.1</code> or <code>localhost</code>.
+      </div>
+
+      <div class="row" style="margin-top: var(--s-4);">
         <button class="primary" id="btnSave" type="button">Save settings</button>
         <span class="muted" id="saveMsg"></span>
       </div>
-    </div>
-  </div>
+    </section>
+
+    <!-- API console (developer tool, collapsed) ---------------------- -->
+    <section class="card">
+      <details class="api-console">
+        <summary>API console <span class="muted" style="font-weight: 400;">— developer endpoints</span></summary>
+        <div style="margin-top: var(--s-3);">
+          <p class="muted" style="margin: 0 0 var(--s-3);">One-click calls for the most useful endpoints.</p>
+          <div class="api-list">
+            <div class="api-item">
+              <div class="api-method">GET</div>
+              <div><div class="api-path">/api/health</div><div class="api-note">Basic app heartbeat.</div></div>
+              <button class="ghost dense api-run" data-method="GET" data-path="/api/health" type="button">Run</button>
+            </div>
+            <div class="api-item">
+              <div class="api-method">GET</div>
+              <div><div class="api-path">/api/env</div><div class="api-note">Loaded runtime config (non-secret).</div></div>
+              <button class="ghost dense api-run" data-method="GET" data-path="/api/env" type="button">Run</button>
+            </div>
+            <div class="api-item">
+              <div class="api-method">GET</div>
+              <div><div class="api-path">/api/printer/status</div><div class="api-note">Current printer + job snapshot.</div></div>
+              <button class="ghost dense api-run" data-method="GET" data-path="/api/printer/status" type="button">Run</button>
+            </div>
+            <div class="api-item">
+              <div class="api-method">GET</div>
+              <div><div class="api-path">/api/metrics/sdpos</div><div class="api-note">UDP metrics and current sdpos.</div></div>
+              <button class="ghost dense api-run" data-method="GET" data-path="/api/metrics/sdpos" type="button">Run</button>
+            </div>
+            <div class="api-item">
+              <div class="api-method">GET</div>
+              <div><div class="api-path">/api/service</div><div class="api-note">Worker status, G-code download, layer progress.</div></div>
+              <button class="ghost dense api-run" data-method="GET" data-path="/api/service" type="button">Run</button>
+            </div>
+            <div class="api-item">
+              <div class="api-method">POST</div>
+              <div><div class="api-path">/api/service/start</div><div class="api-note">Start capture worker.</div></div>
+              <button class="ghost dense api-run" data-method="POST" data-path="/api/service/start" type="button">Run</button>
+            </div>
+            <div class="api-item">
+              <div class="api-method">POST</div>
+              <div><div class="api-path">/api/service/stop</div><div class="api-note">Stop capture worker.</div></div>
+              <button class="ghost dense api-run" data-method="POST" data-path="/api/service/stop" type="button">Run</button>
+            </div>
+            <div class="api-item">
+              <div class="api-method">POST</div>
+              <div><div class="api-path">/api/snapshot/test</div><div class="api-note">Force one RTSP snapshot.</div></div>
+              <button class="ghost dense api-run" data-method="POST" data-path="/api/snapshot/test" type="button">Run</button>
+            </div>
+          </div>
+          <div class="row" style="margin-top: var(--s-3);">
+            <span class="muted" id="apiLastCall">Last call: —</span>
+            <span class="muted" id="apiStatus"></span>
+            <button class="ghost dense" id="btnApiCopy" type="button">Copy response</button>
+          </div>
+          <pre id="apiResult" style="margin-top: var(--s-3);">{}</pre>
+        </div>
+      </details>
+    </section>
+  </main>
 
   <script>
     async function jget(url) {
@@ -742,6 +1197,52 @@
       outdirResolveTimer = setTimeout(refreshOutdirAbsolute, 400);
     }
 
+    const CAMERA_SIDE_LABELS = {
+      front_left: "Camera at front-left; target is the back-right area",
+      front: "Camera in front; target is the back of the bed",
+      front_right: "Camera at front-right; target is the back-left area",
+      left: "Camera on the left; target is the right side of the bed",
+      right: "Camera on the right; target is the left side of the bed",
+      back_left: "Camera at back-left; target is the front-right area",
+      back: "Camera behind the printer; target is the front of the bed",
+      back_right: "Camera at back-right; target is the front-left area",
+    };
+
+    function setCameraSide(value) {
+      if (!CAMERA_SIDE_LABELS[value]) value = "front";
+      const hidden = document.getElementById("cameraSide");
+      if (hidden) hidden.value = value;
+      const cells = document.querySelectorAll("#cameraGrid .cam-cell");
+      cells.forEach(function (c) {
+        const isSel = c.getAttribute("data-value") === value;
+        c.classList.toggle("selected", isSel);
+        c.setAttribute("aria-checked", isSel ? "true" : "false");
+      });
+      const lbl = document.getElementById("cameraSideLabel");
+      if (lbl) lbl.textContent = CAMERA_SIDE_LABELS[value] || "";
+    }
+
+    function wireCameraGrid() {
+      const cells = document.querySelectorAll("#cameraGrid .cam-cell");
+      cells.forEach(function (c) {
+        c.setAttribute("role", "radio");
+        c.addEventListener("click", function () {
+          setCameraSide(c.getAttribute("data-value"));
+        });
+      });
+    }
+
+    function syncClearZoneWaitEnabled() {
+      const chk = document.getElementById("clearZoneWaitEnabled");
+      const num = document.getElementById("clearZoneWait");
+      if (!chk || !num) return;
+      num.disabled = !chk.checked;
+      num.style.opacity = chk.checked ? "" : "0.55";
+      num.title = chk.checked
+        ? "Fallback max wait per layer before snapping at the current position."
+        : "Timeout disabled — clear-zone waits indefinitely for sdpos/XY target.";
+    }
+
     async function loadSettings() {
       const s = await jget("/api/settings");
       document.getElementById("interval").value = s.snapshot_interval_seconds;
@@ -753,11 +1254,11 @@
       document.getElementById("skipUnchanged").value = s.skip_if_unchanged_seconds;
       document.getElementById("snapshotMode").value = s.snapshot_mode || "sdpos_layer";
       document.getElementById("clearZoneEnabled").checked = !!s.clear_zone_enabled;
-      document.getElementById("clearZoneXMin").value = (s.clear_zone_x_min != null) ? s.clear_zone_x_min : 170.0;
-      document.getElementById("clearZoneXMax").value = (s.clear_zone_x_max != null) ? s.clear_zone_x_max : 260.0;
-      document.getElementById("clearZoneYMin").value = (s.clear_zone_y_min != null) ? s.clear_zone_y_min : 170.0;
-      document.getElementById("clearZoneYMax").value = (s.clear_zone_y_max != null) ? s.clear_zone_y_max : 260.0;
-      document.getElementById("clearZoneWait").value = (s.clear_zone_wait_seconds != null) ? s.clear_zone_wait_seconds : 5.0;
+      setCameraSide(s.camera_side || "front");
+      document.getElementById("clearZoneTol").value = (s.clear_zone_xy_tolerance_mm != null) ? s.clear_zone_xy_tolerance_mm : 5.0;
+      document.getElementById("clearZoneWait").value = (s.clear_zone_wait_seconds != null) ? s.clear_zone_wait_seconds : 30.0;
+      document.getElementById("clearZoneWaitEnabled").checked = s.clear_zone_wait_enabled !== false;
+      syncClearZoneWaitEnabled();
       if (s.output_dir_absolute) {
         document.getElementById("outdirAbsolute").textContent = "Absolute path: " + s.output_dir_absolute;
       } else {
@@ -766,6 +1267,10 @@
     }
 
     async function boot() {
+      wireCameraGrid();
+      setCameraSide("front");
+      document.getElementById("clearZoneWaitEnabled").addEventListener("change", syncClearZoneWaitEnabled);
+      syncClearZoneWaitEnabled();
       try {
         const env = await jget("/api/env");
         document.getElementById("envHint").innerHTML =
@@ -781,6 +1286,14 @@
       await refreshPrinter();
       await refreshService();
       window.addEventListener("resize", scheduleRedrawTempCharts);
+      const tempsDetails = document.querySelector("details.temps-details");
+      if (tempsDetails) {
+        tempsDetails.addEventListener("toggle", function () {
+          if (tempsDetails.open) {
+            requestAnimationFrame(redrawTempCharts);
+          }
+        });
+      }
       requestAnimationFrame(function () {
         redrawTempCharts();
       });
@@ -793,7 +1306,10 @@
       const m = rtspUrl.match(/rtsp:\/\/[^/]+\/(.+)$/i);
       const src = (m && m[1]) ? m[1].split("?")[0] : "";
       if (!src) return "";
-      return "http://127.0.0.1:1984/stream.html?src=" + encodeURIComponent(src);
+      // Use whatever host the page was loaded from so the embed works from
+      // the LAN / Tailscale on a phone as well, not just on this PC.
+      const host = (window.location && window.location.hostname) || "127.0.0.1";
+      return "http://" + host + ":1984/stream.html?src=" + encodeURIComponent(src);
     }
 
     function loadStreamFrame() {
@@ -816,10 +1332,9 @@
           skip_if_unchanged_seconds: parseFloat(document.getElementById("skipUnchanged").value),
           snapshot_mode: document.getElementById("snapshotMode").value,
           clear_zone_enabled: document.getElementById("clearZoneEnabled").checked,
-          clear_zone_x_min: parseFloat(document.getElementById("clearZoneXMin").value),
-          clear_zone_x_max: parseFloat(document.getElementById("clearZoneXMax").value),
-          clear_zone_y_min: parseFloat(document.getElementById("clearZoneYMin").value),
-          clear_zone_y_max: parseFloat(document.getElementById("clearZoneYMax").value),
+          camera_side: document.getElementById("cameraSide").value,
+          clear_zone_xy_tolerance_mm: parseFloat(document.getElementById("clearZoneTol").value),
+          clear_zone_wait_enabled: document.getElementById("clearZoneWaitEnabled").checked,
           clear_zone_wait_seconds: parseFloat(document.getElementById("clearZoneWait").value),
         });
         if (saved.output_dir_absolute) {

@@ -66,6 +66,10 @@ class Runtime:
     gcode_download_layer_markers: Optional[int] = None
     gcode_download_error: Optional[str] = None
     move_xy_points: list[tuple[int, float, float]] = field(default_factory=list)
+    # layer_xy_extents[layer_idx] = {"front": (sdpos, x, y), "back": (...), "left": (...), "right": (...)}
+    # "side" is the camera side; the stored point is the extreme point on the *opposite* side
+    # of the bed for that layer (i.e. farthest from the camera).
+    layer_xy_extents: dict[int, dict[str, tuple[int, float, float]]] = field(default_factory=dict)
     pending_layer_idx: Optional[int] = None
     pending_layer_since: Optional[float] = None
     layer_z_heights: list[tuple[int, float]] = field(default_factory=list)
@@ -121,6 +125,7 @@ def _clear_layer_progress(rt: Runtime) -> None:
     rt.gcode_download_layer_markers = None
     rt.gcode_download_error = None
     rt.move_xy_points = []
+    rt.layer_xy_extents = {}
     rt.pending_layer_idx = None
     rt.pending_layer_since = None
     rt.layer_z_heights = []
@@ -168,12 +173,74 @@ def _xy_at_sdpos(points: list[tuple[int, float, float]], sdpos: int) -> tuple[fl
     return x, y
 
 
-def _xy_in_clear_zone(settings: UserSettings, x: float, y: float) -> bool:
-    x0 = min(settings.clear_zone_x_min, settings.clear_zone_x_max)
-    x1 = max(settings.clear_zone_x_min, settings.clear_zone_x_max)
-    y0 = min(settings.clear_zone_y_min, settings.clear_zone_y_max)
-    y1 = max(settings.clear_zone_y_min, settings.clear_zone_y_max)
-    return x0 <= x <= x1 and y0 <= y <= y1
+# Unit direction from the bed center toward the camera for each grid position.
+# Farthest-from-camera score is (-dx * x) + (-dy * y); for each layer we keep the
+# point that maximizes this score for every position so the camera setting can be
+# changed at any time without reparsing the g-code.
+CAMERA_DIRECTIONS: dict[str, tuple[int, int]] = {
+    "front_left":  (-1, -1),
+    "front":       (0, -1),
+    "front_right": (1, -1),
+    "left":        (-1, 0),
+    "right":       (1, 0),
+    "back_left":   (-1, 1),
+    "back":        (0, 1),
+    "back_right":  (1, 1),
+}
+
+
+def _compute_layer_xy_extents(
+    layer_starts: list[tuple[int, int]],
+    xy_points: list[tuple[int, float, float]],
+) -> dict[int, dict[str, tuple[int, float, float]]]:
+    """
+    For each layer, find the XY move that is farthest from the camera for each of
+    the 8 grid positions in ``CAMERA_DIRECTIONS``.
+
+    Returns ``{layer_idx: {position: (sdpos_offset, x, y)}}``. The caller looks up
+    the current ``camera_side`` to fetch the target in O(1); corner positions
+    reduce to a diagonal score (e.g. ``front_left`` -> max(x+y)).
+    """
+    if not layer_starts or not xy_points:
+        return {}
+    layers_sorted = sorted(layer_starts, key=lambda s: s[1])
+    offsets = [s[1] for s in layers_sorted]
+    idxs = [s[0] for s in layers_sorted]
+    directions = list(CAMERA_DIRECTIONS.items())
+    result: dict[int, dict[str, tuple[int, float, float]]] = {}
+    scores: dict[int, dict[str, float]] = {}
+    for sdpos, x, y in xy_points:
+        li = bisect.bisect_right(offsets, sdpos) - 1
+        if li < 0:
+            continue
+        layer_idx = idxs[li]
+        slot = result.get(layer_idx)
+        if slot is None:
+            p = (sdpos, x, y)
+            slot = {}
+            sc: dict[str, float] = {}
+            for side, (dx, dy) in directions:
+                slot[side] = p
+                sc[side] = (-dx * x) + (-dy * y)
+            result[layer_idx] = slot
+            scores[layer_idx] = sc
+            continue
+        sc = scores[layer_idx]
+        for side, (dx, dy) in directions:
+            s = (-dx * x) + (-dy * y)
+            if s > sc[side]:
+                sc[side] = s
+                slot[side] = (sdpos, x, y)
+    return result
+
+
+def _layer_snap_target(
+    rt: Runtime, layer_idx: int, camera_side: str
+) -> tuple[int, float, float] | None:
+    slot = rt.layer_xy_extents.get(layer_idx)
+    if not slot:
+        return None
+    return slot.get(camera_side)
 
 
 async def _ensure_layer_map(job: dict, rt: Runtime, client: PrusaClient) -> None:
@@ -212,6 +279,7 @@ async def _ensure_layer_map(job: dict, rt: Runtime, client: PrusaClient) -> None
             if starts:
                 rt.layer_starts = starts
                 rt.move_xy_points = _extract_xy_points(normalized)
+                rt.layer_xy_extents = _compute_layer_xy_extents(starts, rt.move_xy_points)
                 rt.layer_z_heights = layer_z_heights_from_bytes(normalized)
                 rt.layer_total = max(i for i, _ in starts) + 1
                 rt.gcode_download_status = "success"
@@ -258,6 +326,7 @@ async def _ensure_layer_map(job: dict, rt: Runtime, client: PrusaClient) -> None
 
     rt.layer_starts = starts
     rt.move_xy_points = _extract_xy_points(normalized)
+    rt.layer_xy_extents = _compute_layer_xy_extents(starts, rt.move_xy_points)
     rt.layer_z_heights = layer_z_heights_from_bytes(normalized)
     rt.layer_total = max(i for i, _ in starts) + 1
     rt.gcode_download_status = "success"
@@ -343,23 +412,43 @@ async def _try_snap_sdpos_layer(
         if rt.pending_layer_idx != layer_idx:
             rt.pending_layer_idx = layer_idx
             rt.pending_layer_since = now_ts
-        xy = _xy_at_sdpos(rt.move_xy_points, sdpos)
-        in_zone = False
-        if xy is not None:
-            in_zone = _xy_in_clear_zone(settings, xy[0], xy[1])
+
+        target = _layer_snap_target(rt, layer_idx, settings.camera_side)
         waited = (
             (now_ts - rt.pending_layer_since)
             if rt.pending_layer_since is not None
             else 0.0
         )
-        if (not in_zone) and waited < settings.clear_zone_wait_seconds:
-            if xy is None:
-                rt.state.last_error = "sdpos_layer: waiting clear-zone (no XY yet)"
-            else:
-                rt.state.last_error = (
-                    f"sdpos_layer: waiting clear-zone (x={xy[0]:.1f} y={xy[1]:.1f})"
-                )
-            return False
+        timed_out = (
+            settings.clear_zone_wait_enabled
+            and waited >= settings.clear_zone_wait_seconds
+        )
+
+        # If the parsed g-code gave us no XY for this layer, fall through and snap now.
+        if target is not None:
+            tgt_sdpos, tx, ty = target
+            passed_sdpos = sdpos >= tgt_sdpos
+            xy = _xy_at_sdpos(rt.move_xy_points, sdpos)
+            near_xy = False
+            if xy is not None:
+                dx = xy[0] - tx
+                dy = xy[1] - ty
+                tol = float(settings.clear_zone_xy_tolerance_mm)
+                near_xy = (dx * dx + dy * dy) <= (tol * tol)
+
+            if not (passed_sdpos or near_xy or timed_out):
+                if xy is None:
+                    rt.state.last_error = (
+                        f"sdpos_layer: waiting dynamic clear-zone "
+                        f"(target x={tx:.1f} y={ty:.1f}, side={settings.camera_side})"
+                    )
+                else:
+                    rt.state.last_error = (
+                        f"sdpos_layer: waiting dynamic clear-zone "
+                        f"(at x={xy[0]:.1f} y={xy[1]:.1f}, "
+                        f"target x={tx:.1f} y={ty:.1f}, side={settings.camera_side})"
+                    )
+                return False
 
     job_id = str(job.get("id", ""))
     progress = str(job.get("progress", ""))

@@ -8,6 +8,7 @@ import mimetypes
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
@@ -28,6 +29,8 @@ from app.worker import runtime, start_worker, stop_worker
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+STATIC_DIR = BASE_DIR / "static"
+FAVICON_PATH = STATIC_DIR / "favicon.png"
 
 
 class UserSettingsPayload(BaseModel):
@@ -40,10 +43,9 @@ class UserSettingsPayload(BaseModel):
     skip_if_unchanged_seconds: float | None = None
     snapshot_mode: str | None = None
     clear_zone_enabled: bool | None = None
-    clear_zone_x_min: float | None = None
-    clear_zone_x_max: float | None = None
-    clear_zone_y_min: float | None = None
-    clear_zone_y_max: float | None = None
+    camera_side: str | None = None
+    clear_zone_xy_tolerance_mm: float | None = None
+    clear_zone_wait_enabled: bool | None = None
     clear_zone_wait_seconds: float | None = None
     snapshots_enabled: bool | None = None
     auto_shutdown_enabled: bool | None = None
@@ -90,6 +92,18 @@ def _resolved_output_dir(output_dir: str) -> str:
     return str(Path(output_dir).expanduser().resolve())
 
 
+def _user_desktop_dir() -> str:
+    """Best-effort path to the current user's Desktop folder."""
+    candidates = [
+        Path.home() / "Desktop",
+        Path.home() / "OneDrive" / "Desktop",
+    ]
+    for p in candidates:
+        if p.is_dir():
+            return str(p)
+    return str(Path.home())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     env = load_env_config()
@@ -104,6 +118,18 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    # Browsers request /favicon.ico by default; serve the PNG (modern browsers
+    # accept PNG content regardless of the .ico extension).
+    if FAVICON_PATH.is_file():
+        return FileResponse(FAVICON_PATH, media_type="image/png")
+    raise HTTPException(status_code=404, detail="favicon not found")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -146,6 +172,7 @@ async def api_env():
         "metrics_udp_enabled": env.metrics_udp_enabled,
         "metrics_udp_bind": env.metrics_udp_bind,
         "metrics_udp_port": env.metrics_udp_port,
+        "user_desktop": _user_desktop_dir(),
     }
 
 
@@ -488,6 +515,27 @@ async def service_state():
             "axis_z": rt.last_axis_z,
             "z_table_size": len(rt.layer_z_heights),
         },
+        "layer_snap_target": _current_layer_snap_target(rt, s),
+    }
+
+
+def _current_layer_snap_target(rt, s: UserSettings) -> dict | None:
+    """Surface the current layer's dynamic-clear-zone target for the UI."""
+    if rt.layer_current_index is None:
+        return None
+    slot = rt.layer_xy_extents.get(rt.layer_current_index)
+    if not slot:
+        return None
+    pt = slot.get(s.camera_side)
+    if pt is None:
+        return None
+    sdpos, x, y = pt
+    return {
+        "layer_index": rt.layer_current_index,
+        "camera_side": s.camera_side,
+        "x": x,
+        "y": y,
+        "sdpos": sdpos,
     }
 
 
