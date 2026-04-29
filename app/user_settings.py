@@ -22,7 +22,7 @@ class UserSettings(BaseModel):
 
     snapshot_interval_seconds: float = Field(
         30.0,
-        ge=1.0,
+        ge=0.05,
         le=86400.0,
         description=(
             "Worker poll interval (seconds). Controls how often the app polls "

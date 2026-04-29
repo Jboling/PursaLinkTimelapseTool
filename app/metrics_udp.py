@@ -11,7 +11,7 @@ from app.metrics_state import metrics_state
 
 log = logging.getLogger(__name__)
 
-_RE_INT = re.compile(r"([A-Za-z0-9_]+)\s+v=(\d+)i\s+(-?\d+)\s*")
+_RE_INT = re.compile(r"([A-Za-z0-9_]+)\s+v=(-?\d+)i\s+(-?\d+)\s*")
 _RE_FLOAT = re.compile(r"([A-Za-z0-9_]+)\s+v=([0-9.eE+-]+)\s+(-?\d+)\s*")
 _RE_SDPOS_INFLUX = re.compile(r"(?:^|[\s,])sdpos=(\d+)i?(?=\s|,|\n|$)", re.MULTILINE)
 _RE_METRIC_KV_LINE = re.compile(
@@ -19,10 +19,16 @@ _RE_METRIC_KV_LINE = re.compile(
 )
 
 
-def _parse_kv_value(raw: str) -> int | float | None:
+def _parse_kv_value(raw: str) -> int | float | str | bool | None:
     s = raw.strip()
     if not s:
         return None
+    if s == "t":
+        return True
+    if s == "f":
+        return False
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        return s[1:-1].replace('\\"', '"')
     if s.endswith("i"):
         try:
             return int(s[:-1])
@@ -34,8 +40,8 @@ def _parse_kv_value(raw: str) -> int | float | None:
         return None
 
 
-def parse_buddy_metrics_payload(text: str) -> dict[str, int | float]:
-    out: dict[str, int | float] = {}
+def parse_buddy_metrics_payload(text: str) -> dict[str, int | float | str | bool]:
+    out: dict[str, int | float | str | bool] = {}
     for m in _RE_INT.finditer(text):
         out[m.group(1)] = int(m.group(2))
     for m in _RE_FLOAT.finditer(text):
@@ -53,12 +59,11 @@ def parse_buddy_metrics_payload(text: str) -> dict[str, int | float]:
             if "=" not in field:
                 continue
             key, raw_val = field.split("=", 1)
-            if key != "v":
-                continue
             parsed = _parse_kv_value(raw_val)
-            if parsed is not None:
+            if parsed is not None and key == "v":
                 out[name] = parsed
-            break
+            elif parsed is not None:
+                out[f"{name}_{key}"] = parsed
     if "sdpos" not in out:
         last_sdpos: int | None = None
         for m in _RE_SDPOS_INFLUX.finditer(text):

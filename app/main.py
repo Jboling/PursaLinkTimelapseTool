@@ -1,8 +1,11 @@
 import asyncio
 from contextlib import asynccontextmanager
+import json
+import math
 import os
 from pathlib import Path
 import subprocess
+from typing import Any
 
 import mimetypes
 
@@ -21,7 +24,11 @@ from app.photo_video import (
     resolve_safe_image_file,
 )
 from app.metrics_state import metrics_state
-from app.metrics_udp import start_metrics_udp_server, stop_metrics_udp_server
+from app.metrics_udp import (
+    parse_buddy_metrics_payload,
+    start_metrics_udp_server,
+    stop_metrics_udp_server,
+)
 from app.prusa_client import PrusaClient
 from app.snapshot import build_filename, grab_frame_rtsp, resolve_output_path
 from app.user_settings import UserSettings, load_user_settings, save_user_settings
@@ -35,6 +42,7 @@ FAVICON_PATH = STATIC_DIR / "favicon.png"
 
 class UserSettingsPayload(BaseModel):
     snapshot_interval_seconds: float | None = None
+    snapshot_interval_ms: float | None = None
     output_dir: str | None = None
     subfolder_by_date: bool | None = None
     subfolder_by_job_id: bool | None = None
@@ -82,6 +90,69 @@ def _is_localhost(request: Request) -> bool:
 
 def get_env():
     return load_env_config()
+
+
+def _first_metric(metrics: dict[str, Any], names: tuple[str, ...]) -> int | float | None:
+    for name in names:
+        val = metrics.get(name)
+        if isinstance(val, (int, float)):
+            return val
+    return None
+
+
+def _extract_chamber_temps(metrics: dict[str, Any]) -> dict[str, int | float | None]:
+    cur = _first_metric(
+        metrics,
+        (
+            "temp_chamber",
+            "chamber_temp",
+            "chamber_temperature",
+            "chamber",
+        ),
+    )
+    tgt = _first_metric(
+        metrics,
+        (
+            "chamber_ttemp",
+            "target_chamber",
+            "chamber_target",
+            "setpoint_chamber",
+        ),
+    )
+    if cur is None:
+        for k, v in metrics.items():
+            kl = k.lower()
+            if "chamber" in kl and ("temp" in kl or kl.endswith("_c")) and isinstance(v, (int, float)):
+                cur = v
+                break
+    if tgt is None:
+        for k, v in metrics.items():
+            kl = k.lower()
+            if "chamber" in kl and ("target" in kl or "setpoint" in kl) and isinstance(v, (int, float)):
+                tgt = v
+                break
+    return {"current": cur, "target": tgt}
+
+
+def _sanitize_metric_value(val: Any) -> int | float | str | bool | None:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        if not math.isfinite(val):
+            return None
+        return val
+    if isinstance(val, str):
+        return val
+    return str(val)
+
+
+def _sanitize_metrics(metrics: dict[str, Any]) -> dict[str, int | float | str | bool | None]:
+    out: dict[str, int | float | str | bool | None] = {}
+    for key, val in metrics.items():
+        out[key] = _sanitize_metric_value(val)
+    return out
 
 
 def settings_path() -> Path:
@@ -179,6 +250,9 @@ async def api_env():
 @app.get("/api/metrics/sdpos")
 async def api_metrics_sdpos():
     snap = metrics_state.snapshot()
+    raw_metrics = snap.get("metrics") or {}
+    metrics = _sanitize_metrics(raw_metrics)
+    chamber = _extract_chamber_temps(metrics)
     hint = None
     if snap.get("sdpos") is None:
         hint = (
@@ -188,7 +262,9 @@ async def api_metrics_sdpos():
     out = {
         "sdpos": snap.get("sdpos"),
         "sdpos_source": snap.get("sdpos_source"),
-        "metrics": snap.get("metrics"),
+        "metrics": metrics,
+        "chamber_temp": chamber["current"],
+        "chamber_target": chamber["target"],
         "packets_total": snap.get("packets_total"),
         "bytes_total": snap.get("bytes_total"),
         "last_payload_preview": snap.get("last_payload_preview"),
@@ -196,6 +272,47 @@ async def api_metrics_sdpos():
     if hint:
         out["hint"] = hint
     return out
+
+
+@app.get("/api/metrics/raw")
+async def api_metrics_raw():
+    snap = metrics_state.snapshot()
+    raw = snap.get("last_payload_raw") or ""
+    parsed_json = None
+    parse_error = None
+    json_parse_attempted = False
+    parsed_metrics: dict[str, int | float | str | bool] = {}
+    if raw:
+        stripped = raw.lstrip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            json_parse_attempted = True
+            try:
+                parsed_json = json.loads(stripped)
+            except Exception as e:
+                parse_error = str(e)
+        else:
+            # Some emitters prepend syslog metadata before JSON payload.
+            # If so, try parsing from the first JSON token.
+            idx_obj = raw.find("{")
+            idx_arr = raw.find("[")
+            starts = [i for i in (idx_obj, idx_arr) if i >= 0]
+            if starts:
+                json_parse_attempted = True
+                start = min(starts)
+                try:
+                    parsed_json = json.loads(raw[start:])
+                except Exception as e:
+                    parse_error = str(e)
+        parsed_metrics = parse_buddy_metrics_payload(raw)
+    return {
+        "raw_payload": raw,
+        "parsed_json": parsed_json,
+        "parsed_metrics": parsed_metrics,
+        "json_parse_attempted": json_parse_attempted,
+        "json_parse_error": parse_error,
+        "packets_total": snap.get("packets_total"),
+        "bytes_total": snap.get("bytes_total"),
+    }
 
 
 @app.get("/api/printer/status")
@@ -226,6 +343,7 @@ async def printer_status():
 async def get_settings():
     s = load_user_settings(settings_path())
     d = s.model_dump()
+    d["snapshot_interval_ms"] = round(float(s.snapshot_interval_seconds) * 1000.0, 3)
     d["output_dir_absolute"] = _resolved_output_dir(s.output_dir)
     return d
 
@@ -472,11 +590,16 @@ async def put_settings(body: UserSettingsPayload):
     path = settings_path()
     cur = load_user_settings(path)
     data = cur.model_dump()
-    for k, v in body.model_dump(exclude_none=True).items():
+    incoming = body.model_dump(exclude_none=True)
+    if "snapshot_interval_ms" in incoming:
+        ms = float(incoming.pop("snapshot_interval_ms"))
+        incoming["snapshot_interval_seconds"] = ms / 1000.0
+    for k, v in incoming.items():
         data[k] = v
     updated = UserSettings.model_validate(data)
     save_user_settings(path, updated)
     d = updated.model_dump()
+    d["snapshot_interval_ms"] = round(float(updated.snapshot_interval_seconds) * 1000.0, 3)
     d["output_dir_absolute"] = _resolved_output_dir(updated.output_dir)
     return d
 

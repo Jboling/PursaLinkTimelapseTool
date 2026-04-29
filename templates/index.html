@@ -361,6 +361,12 @@
       max-height: 220px;
       border: 1px solid var(--md-outline-variant);
     }
+    #metricsLive {
+      max-height: none;
+      overflow: auto;
+      font-size: 12px;
+      line-height: 1.4;
+    }
 
     /* ------------------------------------------------------------------
        API console list (tonal surface rows).
@@ -608,6 +614,9 @@
               <span class="mid-dot">·</span>
               <span class="lbl">Nozzle</span>
               <span class="cur" id="nozzleCurVal">—</span><span class="sep">/</span><span class="tgt" id="nozzleTgtVal">—</span>
+              <span class="mid-dot">·</span>
+              <span class="lbl">Chamber</span>
+              <span class="cur" id="chamberCurVal">—</span><span class="sep">/</span><span class="tgt" id="chamberTgtVal">—</span>
             </span>
           </summary>
           <div class="temp-charts">
@@ -623,6 +632,12 @@
               </div>
               <canvas id="chartNozzle" width="400" height="280"></canvas>
             </div>
+            <div class="temp-chart-wrap">
+              <div class="temp-chart-head">
+                <h3>Chamber °C</h3>
+              </div>
+              <canvas id="chartChamber" width="400" height="280"></canvas>
+            </div>
           </div>
           <p class="muted" id="tempChartHint" style="margin: var(--s-3) 0 0; font-size: 12px;">History builds while this page is open (last ~45 min, sampled every refresh).</p>
         </details>
@@ -631,13 +646,18 @@
       <section class="card" aria-labelledby="streamTitle">
         <h2 id="streamTitle">Stream view</h2>
         <div class="preview-wrap">
-          <iframe id="streamFrame" title="Stream view" loading="lazy" referrerpolicy="no-referrer"></iframe>
+          <iframe id="streamFrame" title="Stream view" loading="lazy" referrerpolicy="no-referrer" allowfullscreen allow="fullscreen; autoplay; encrypted-media"></iframe>
         </div>
         <div class="field-with-btn" style="margin-top: var(--s-3);">
           <input type="text" id="streamUrl" placeholder="http://&lt;host&gt;:1984/stream.html?src=coreone" />
           <button class="ghost" id="btnStreamLoad" type="button">Load</button>
         </div>
         <p class="muted" style="margin: var(--s-2) 0 0;">Embed a browser-playable stream URL (for example a go2rtc stream page). The default follows whatever host you loaded this page from, so it works from a phone over LAN / Tailscale as well. Drag the lower-right corner to resize.</p>
+        <div class="settings-group" style="margin-top: var(--s-3);">
+          <h3>Buddy metrics (latest values)</h3>
+          <p class="muted" style="margin: 0 0 var(--s-2);">Live list of most recent values seen from UDP metrics.</p>
+          <pre id="metricsLive">Waiting for metrics…</pre>
+        </div>
       </section>
     </div>
 
@@ -651,8 +671,8 @@
         <h3>Capture behavior</h3>
         <div class="grid grid-2">
           <div>
-            <label for="interval" title="How often the app polls the printer for state and re-checks sdpos to decide whether to snap.">Printer poll interval (seconds)</label>
-            <input type="number" id="interval" min="1" step="1" />
+            <label for="interval" title="How often the app polls the printer for state and re-checks sdpos to decide whether to snap.">Printer poll interval (milliseconds)</label>
+            <input type="number" id="interval" min="50" step="50" />
           </div>
           <div>
             <label for="snapshotMode">Snapshot mode</label>
@@ -792,6 +812,11 @@
             </div>
             <div class="api-item">
               <div class="api-method">GET</div>
+              <div><div class="api-path">/api/metrics/raw</div><div class="api-note">Latest raw UDP payload, plus best-effort JSON parse.</div></div>
+              <button class="ghost dense api-run" data-method="GET" data-path="/api/metrics/raw" type="button">Run</button>
+            </div>
+            <div class="api-item">
+              <div class="api-method">GET</div>
               <div><div class="api-path">/api/service</div><div class="api-note">Worker status, G-code download, layer progress.</div></div>
               <button class="ghost dense api-run" data-method="GET" data-path="/api/service" type="button">Run</button>
             </div>
@@ -814,6 +839,7 @@
           <div class="row" style="margin-top: var(--s-3);">
             <span class="muted" id="apiLastCall">Last call: —</span>
             <span class="muted" id="apiStatus"></span>
+            <button class="ghost dense" id="btnApiRerun" type="button">Run last</button>
             <button class="ghost dense" id="btnApiCopy" type="button">Copy response</button>
           </div>
           <pre id="apiResult" style="margin-top: var(--s-3);">{}</pre>
@@ -909,12 +935,22 @@
       return s;
     }
 
-    function pushTempSample(printer) {
+    function pushTempSample(printer, metrics) {
       const bed = parseNum(printer.temp_bed);
       const bedTgt = parseNum(printer.target_bed);
       const noz = parseNum(printer.temp_nozzle);
       const nozTgt = parseNum(printer.target_nozzle);
-      tempSamples.push({ t: Date.now(), bed: bed, bedTgt: bedTgt, noz: noz, nozTgt: nozTgt });
+      const chamber = parseNum(metrics && metrics.chamber_temp);
+      const chamberTgt = parseNum(metrics && metrics.chamber_target);
+      tempSamples.push({
+        t: Date.now(),
+        bed: bed,
+        bedTgt: bedTgt,
+        noz: noz,
+        nozTgt: nozTgt,
+        chamber: chamber,
+        chamberTgt: chamberTgt
+      });
       tempSamples = pruneTempSamples(tempSamples);
     }
 
@@ -923,19 +959,25 @@
       return v.toFixed(1) + "°";
     }
 
-    function updateTempValueDisplays(printer) {
+    function updateTempValueDisplays(printer, metrics) {
       const bed = parseNum(printer.temp_bed);
       const bedTgt = parseNum(printer.target_bed);
       const noz = parseNum(printer.temp_nozzle);
       const nozTgt = parseNum(printer.target_nozzle);
+      const chamber = parseNum(metrics && metrics.chamber_temp);
+      const chamberTgt = parseNum(metrics && metrics.chamber_target);
       const bc = document.getElementById("bedCurVal");
       const bt = document.getElementById("bedTgtVal");
       const nc = document.getElementById("nozzleCurVal");
       const nt = document.getElementById("nozzleTgtVal");
+      const cc = document.getElementById("chamberCurVal");
+      const ct = document.getElementById("chamberTgtVal");
       if (bc) bc.textContent = fmtTempVal(bed);
       if (bt) bt.textContent = fmtTempVal(bedTgt);
       if (nc) nc.textContent = fmtTempVal(noz);
       if (nt) nt.textContent = fmtTempVal(nozTgt);
+      if (cc) cc.textContent = fmtTempVal(chamber);
+      if (ct) ct.textContent = fmtTempVal(chamberTgt);
     }
 
     function fmtClockShort(ts) {
@@ -1069,8 +1111,37 @@
     function redrawTempCharts() {
       var bedC = document.getElementById("chartBed");
       var nozC = document.getElementById("chartNozzle");
+      var chamberC = document.getElementById("chartChamber");
       if (bedC) drawTempChart(bedC, tempSamples, "bed", "bedTgt", "#58a6ff", "#6e7681");
       if (nozC) drawTempChart(nozC, tempSamples, "noz", "nozTgt", "#f0883e", "#6e7681");
+      if (chamberC) drawTempChart(chamberC, tempSamples, "chamber", "chamberTgt", "#86d8a5", "#6e7681");
+    }
+
+    function fmtMetricVal(v) {
+      if (v == null) return "null";
+      if (typeof v === "number") {
+        if (!Number.isFinite(v)) return "null";
+        return Number.isInteger(v) ? String(v) : v.toFixed(6).replace(/\.?0+$/, "");
+      }
+      if (typeof v === "boolean") return v ? "true" : "false";
+      return String(v);
+    }
+
+    function updateLiveMetricsList(metricsData) {
+      const out = document.getElementById("metricsLive");
+      if (!out) return;
+      const metrics = (metricsData && metricsData.metrics) || {};
+      const keys = Object.keys(metrics).sort();
+      if (!keys.length) {
+        out.textContent = "No metrics received yet.";
+        out.style.maxHeight = "none";
+        return;
+      }
+      out.textContent = keys.map((k) => k + ": " + fmtMetricVal(metrics[k])).join("\n");
+      const lines = Math.max(4, keys.length);
+      const desiredPx = Math.round(lines * 18 + 16);
+      const maxPx = Math.round(window.innerHeight * 0.7);
+      out.style.maxHeight = Math.min(desiredPx, maxPx) + "px";
     }
 
     var tempChartResizeTimer = null;
@@ -1120,6 +1191,7 @@
     async function refreshPrinter() {
       try {
         const data = await jget("/api/printer/status");
+        const metrics = await jget("/api/metrics/sdpos").catch(() => null);
         latestPrinterData = data;
         document.getElementById("printerJson").textContent = JSON.stringify(data, null, 2);
         const printer = (data.status && data.status.printer) || {};
@@ -1128,8 +1200,9 @@
         pill.textContent = "State: " + st;
         pill.className = "pill " + (st === "PRINTING" ? "run" : "stop");
         updateDashStats(data);
-        pushTempSample(printer);
-        updateTempValueDisplays(printer);
+        pushTempSample(printer, metrics);
+        updateTempValueDisplays(printer, metrics);
+        updateLiveMetricsList(metrics);
         redrawTempCharts();
       } catch (e) {
         document.getElementById("printerJson").textContent = "Error: " + e.message;
@@ -1245,7 +1318,8 @@
 
     async function loadSettings() {
       const s = await jget("/api/settings");
-      document.getElementById("interval").value = s.snapshot_interval_seconds;
+      var intervalMs = (s.snapshot_interval_ms != null) ? s.snapshot_interval_ms : ((s.snapshot_interval_seconds || 0) * 1000);
+      document.getElementById("interval").value = intervalMs;
       document.getElementById("outdir").value = s.output_dir;
       document.getElementById("subfolder").checked = s.subfolder_by_date;
       document.getElementById("subfolderJob").checked = s.subfolder_by_job_id !== false;
@@ -1323,7 +1397,7 @@
       msg.textContent = "";
       try {
         const saved = await jput("/api/settings", {
-          snapshot_interval_seconds: parseFloat(document.getElementById("interval").value),
+          snapshot_interval_ms: parseFloat(document.getElementById("interval").value),
           output_dir: document.getElementById("outdir").value.trim(),
           subfolder_by_date: document.getElementById("subfolder").checked,
           subfolder_by_job_id: document.getElementById("subfolderJob").checked,
@@ -1455,13 +1529,25 @@
         out.textContent = String(e.message || e);
       }
     }
+    let lastApiMethod = null;
+    let lastApiPath = null;
     document.querySelectorAll(".api-run").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const method = btn.getAttribute("data-method") || "GET";
         const path = btn.getAttribute("data-path") || "/api/health";
+        lastApiMethod = method;
+        lastApiPath = path;
         await runApiFromButton(method, path);
       });
     });
+    document.getElementById("btnApiRerun").onclick = async () => {
+      const st = document.getElementById("apiStatus");
+      if (!lastApiMethod || !lastApiPath) {
+        st.textContent = "No previous API call";
+        return;
+      }
+      await runApiFromButton(lastApiMethod, lastApiPath);
+    };
     document.getElementById("btnApiCopy").onclick = async () => {
       const out = document.getElementById("apiResult").textContent || "";
       try {

@@ -14,17 +14,20 @@ class MetricsState:
         self.bytes_total = 0
         self.last_packet_at: float | None = None
         self.last_payload_preview: str = ""
-        self.metrics: dict[str, int | float] = {}
+        self.last_payload_raw: str = ""
+        self.metrics: dict[str, int | float | str | bool] = {}
         self.sdpos: int | None = None
         self.sdpos_source: str | None = None
 
-    def record_packet(self, raw: bytes, parsed: dict[str, int | float]) -> None:
+    def record_packet(self, raw: bytes, parsed: dict[str, int | float | str | bool]) -> None:
         now = time.monotonic()
         with self._lock:
             self.packets_total += 1
             self.bytes_total += len(raw)
             self.last_packet_at = now
-            self.last_payload_preview = raw.decode("utf-8", errors="replace")[:512]
+            decoded = raw.decode("utf-8", errors="replace")
+            self.last_payload_raw = decoded
+            self.last_payload_preview = decoded
             self.metrics.update(parsed)
             if "sdpos" in parsed:
                 val = parsed.get("sdpos")
@@ -52,7 +55,8 @@ class MetricsState:
                 "sdpos": self.sdpos,
                 "sdpos_source": self.sdpos_source,
                 "metrics": dict(self.metrics),
-                "last_payload_preview": self.last_payload_preview[:400],
+                "last_payload_raw": self.last_payload_raw,
+                "last_payload_preview": self.last_payload_preview,
             }
 
 

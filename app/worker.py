@@ -28,6 +28,12 @@ GCODE_CACHE_ROOT = Path("cache/gcode")
 Z_TOLERANCE = 1e-4
 # Require this many consecutive polls at the same axis_z before snapping (filters brief Z blips).
 AXIS_Z_STABLE_POLLS = 2
+# PrusaLink on printer hardware can reset sockets if polled too aggressively.
+MIN_HTTP_POLL_SECONDS = 0.25
+
+
+def _poll_sleep_seconds(settings: UserSettings) -> float:
+    return max(MIN_HTTP_POLL_SECONDS, float(settings.snapshot_interval_seconds))
 
 
 @dataclass
@@ -509,6 +515,7 @@ async def _run_loop(
     rt = runtime
 
     while rt.state.running:
+        sleep_after_loop = _poll_sleep_seconds(get_settings())
         rt.state.last_loop_at = datetime.now(timezone.utc).isoformat()
         try:
             settings = get_settings()
@@ -546,7 +553,7 @@ async def _run_loop(
                 rt.axis_z_prev_poll = None
                 rt.axis_z_same_streak = 0
                 _clear_layer_progress(rt)
-                await asyncio.sleep(max(1.0, settings.snapshot_interval_seconds))
+                await asyncio.sleep(_poll_sleep_seconds(settings))
                 continue
 
             if settings.snapshot_mode == "sdpos_layer":
@@ -564,11 +571,11 @@ async def _run_loop(
                             env, settings, status, job, printer_state, z_for_name, rt
                         )
                         if snapped:
-                            await asyncio.sleep(max(1.0, settings.snapshot_interval_seconds))
+                            await asyncio.sleep(_poll_sleep_seconds(settings))
                             continue
 
             if not settings.snapshots_enabled:
-                await asyncio.sleep(max(1.0, settings.snapshot_interval_seconds))
+                await asyncio.sleep(_poll_sleep_seconds(settings))
                 continue
 
             z_raw = printer.get("axis_z")
@@ -579,7 +586,7 @@ async def _run_loop(
 
             # One snap per Z change: skip if axis_z matches the last committed Z (after snap)
             if z is None:
-                await asyncio.sleep(max(1.0, settings.snapshot_interval_seconds))
+                await asyncio.sleep(_poll_sleep_seconds(settings))
                 continue
 
             if rt.axis_z_prev_poll is None:
@@ -593,12 +600,12 @@ async def _run_loop(
                 if rt.last_polled_axis_z is not None and math.isclose(
                     z, rt.last_polled_axis_z, rel_tol=0.0, abs_tol=Z_TOLERANCE
                 ):
-                    await asyncio.sleep(max(1.0, settings.snapshot_interval_seconds))
+                    await asyncio.sleep(_poll_sleep_seconds(settings))
                     continue
 
                 # New Z vs last snap: require N consecutive polls at this height (retraction blips)
                 if rt.axis_z_same_streak < AXIS_Z_STABLE_POLLS:
-                    await asyncio.sleep(max(1.0, settings.snapshot_interval_seconds))
+                    await asyncio.sleep(_poll_sleep_seconds(settings))
                     continue
 
                 job_id = str(job.get("id", "")) if job else ""
@@ -625,7 +632,7 @@ async def _run_loop(
                             wait = settings.skip_if_unchanged_seconds - elapsed
                             rt.last_polled_axis_z = z
                             await asyncio.sleep(
-                                min(max(0.5, wait), settings.snapshot_interval_seconds)
+                                min(max(0.05, wait), _poll_sleep_seconds(settings))
                             )
                             continue
 
@@ -668,10 +675,20 @@ async def _run_loop(
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            rt.state.last_error = f"{e!s}\n{traceback.format_exc()}"
+            emsg = str(e)
+            if (
+                "forcibly closed by the remote host" in emsg
+                or "ConnectionResetError(10054" in emsg
+            ):
+                rt.state.last_error = (
+                    "PrusaLink connection reset by remote host (WinError 10054). "
+                    "Likely transient network hiccup or too-frequent polling; retrying."
+                )
+                sleep_after_loop = max(1.0, _poll_sleep_seconds(get_settings()))
+            else:
+                rt.state.last_error = f"{e!s}\n{traceback.format_exc()}"
 
-        settings = get_settings()
-        await asyncio.sleep(max(1.0, settings.snapshot_interval_seconds))
+        await asyncio.sleep(sleep_after_loop)
 
 
 runtime = Runtime()
